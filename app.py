@@ -46,6 +46,7 @@ import json
 import os
 import time
 import tomllib
+import yaml
 from collections import Counter, defaultdict, namedtuple
 from datetime import datetime
 
@@ -58,7 +59,7 @@ DEFAULT_MEMBERS = os.path.join(GR_DIR, "members.json")
 DEFAULT_AGE_GROUPS = os.path.join(GR_DIR, "age-groups.json")
 DEFAULT_ROUNDS = os.path.join(GR_DIR, "rounds.json")
 DEFAULT_BOWTYPES = os.path.join(GR_DIR, "bowtypes.json")
-DEFAULT_MAPPINGS = "mappings.toml"
+DEFAULT_MAPPINGS = "mappings.yaml"
 DEFAULT_CONFIG = "config.toml"
 # Full detail of any rejected submissions is appended here for separate review;
 # the report itself only shows counts. Overridable with --error-log.
@@ -113,19 +114,19 @@ ENV_PASSWORD = "GOLDEN_RECORDS_PASSWORD"
 ENV_EA_API_KEY = "EXPERTARCHER_API_KEY"
 
 # All the reference lookups needed to map one score, resolved once at startup.
-#   name_map:  ExpertArcher name -> Golden Records name (from mappings.toml).
-#              A single generic map; the field being resolved (round vs bow
-#              type) decides which id table the result is looked up in.
+#   name_map:  ExpertArcher name -> Golden Records name (from mappings.yaml).
+#              A single generic map covering rounds, bow types and
+#              classifications; the field being resolved decides what happens
+#              to the result -- rounds and bow types are looked up in the id
+#              table for their kind, while a classification goes straight into
+#              the CSV Classification column (unlisted ones map to blank).
 #   round_ids/class_ids: lower-cased Golden Records name -> a details dict
 #              carrying the canonical name and id (and, for rounds, the
 #              Indoor/Outdoor type). Keyed lower-case for case-insensitive
 #              lookup (see resolve / load_rounds / load_bowtypes).
-#   classification_map: ExpertArcher classification -> Golden Records
-#              classification name, for the CSV Classification column
-#              (from mappings.toml); unlisted classifications map to blank.
 Lookups = namedtuple(
     "Lookups",
-    "members age_groups name_map round_ids class_ids classification_map",
+    "members age_groups name_map round_ids class_ids",
 )
 
 # One fully-resolved score, independent of the output format. transform_score
@@ -201,25 +202,20 @@ def load_bowtypes(path):
 
 
 def load_mappings(path):
-    """Load the ExpertArcher -> Golden Records mappings (TOML).
+    """Load the ExpertArcher -> Golden Records name map (YAML).
 
-    Returns (name_map, classification_map):
-      - name_map: round & bow-type name overrides (the [names] table). The code
-        resolves each mapped name against the appropriate id table by context.
-        A legacy flat file (entries at the top level, no [names] header) is
-        still accepted.
-      - classification_map: ExpertArcher classification -> Golden Records
-        classification name (the [classifications] table), for the CSV import's
-        Classification column; an unlisted classification is left blank.
+    One flat mapping of "ExpertArcher name": "Golden Records name" covering
+    rounds, bow types and classifications alike -- they are all name
+    translations, and the field being mapped decides what the result is used
+    for (see `resolve` for rounds/bow types, `transform_score` for the CSV
+    Classification column).
+
+    YAML rather than TOML because CloudFormation's AWS::Include transform reads
+    only JSON or YAML, and the state machine consumes this same file via an SSM
+    parameter. YAML keeps the comments that JSON cannot.
     """
-    with open(path, "rb") as file:  # tomllib requires a binary stream
-        data = tomllib.load(file)
-    if "names" in data:
-        name_map = data["names"]
-    else:  # legacy flat file: top-level string entries are the name map
-        name_map = {key: value for key, value in data.items()
-                    if isinstance(value, str)}
-    return name_map, data.get("classifications", {})
+    with open(path, encoding="utf-8") as file:
+        return yaml.safe_load(file)
 
 
 def load_config(path):
@@ -725,9 +721,10 @@ def transform_score(score, lookups):
         record_qualifying=True,                     # always eligible for club records
         # CSV-only columns (the API has no such fields). Handicap copies the
         # ExpertArcher value when present. Classification is translated to the
-        # Golden Records name via the mappings; an unlisted value is left blank.
+        # Golden Records name via the mappings; an unlisted value is left blank
+        # (unlike rounds and bow types, which fall back to the name as-is).
         handicap=_opt_str(score.get("handicap")),
-        classification=lookups.classification_map.get(
+        classification=lookups.name_map.get(
             score.get("classification") or "", ""),
     )
     return mapped, None
@@ -988,7 +985,7 @@ def build_arg_parser():
     parser.add_argument("--bowtypes", default=DEFAULT_BOWTYPES,
                         help=f"Golden Records bow types JSON (default: {DEFAULT_BOWTYPES})")
     parser.add_argument("--mappings", default=DEFAULT_MAPPINGS,
-                        help=f"ExpertArcher -> Golden Records name mappings TOML "
+                        help=f"ExpertArcher -> Golden Records name mappings YAML "
                              f"(default: {DEFAULT_MAPPINGS})")
     parser.add_argument("--config", default=DEFAULT_CONFIG,
                         help=f"API config TOML for ExpertArcher (scores) and "
@@ -1048,14 +1045,12 @@ def main(argv=None):
     except RuntimeError as exc:
         raise SystemExit(f"Error: {exc}")
 
-    name_map, classification_map = load_mappings(args.mappings)
     lookups = Lookups(
         members=load_members(args.members),
         age_groups=load_age_groups(args.age_groups),
-        name_map=name_map,
+        name_map=load_mappings(args.mappings),
         round_ids=load_rounds(args.rounds),
         class_ids=load_bowtypes(args.bowtypes),
-        classification_map=classification_map,
     )
 
     try:

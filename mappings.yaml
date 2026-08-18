@@ -1,0 +1,66 @@
+# ExpertArcher -> Golden Records name mappings.
+#
+# One flat mapping of "ExpertArcher name": "Golden Records name". Rounds, bow
+# types and classifications all live here together -- they are all just name
+# translations.
+#
+# The comment groups below are for readability only; the parser sees one
+# mapping. Keys and values are always quoted so a name that looks like a number
+# or a boolean ("1440", "No") stays a string.
+
+# --- Bow types ---
+"afb": "American Flatbow"
+
+# --- Rounds ---
+"252 10yds": "252 - 10 yds"
+"252 20yds": "252 - 20 yds"
+"252 30yds": "252 - 30 yds"
+"252 40yds": "252 - 40 yds"
+"252 50yds": "252 - 50 yds"
+"252 60yds": "252 - 60 yds"
+"252 80yds": "252 - 80 yds"
+"252 100yds": "252 - 100 yds"
+"Clout Double 80yds": "Double Clout 80yds"
+"Clout Double 100yds": "Double Clout 100yds"
+"Clout Double 120yds": "Double Clout 120yds"
+"Clout Double 140yds": "Double Clout 140yds"
+"Clout Double 180yds": "Double Clout 180yds"
+"Long Metric (90m)": "Long Metric 90"
+"Long Metric (70m)": "Long Metric 70"
+"Long Metric I": "Long Metric 70"
+"Metric 122-50": "WA 50m (122cm Face)"
+"Metric 122-40": "WA 40m (122 cm Face)"
+"Metric 122-30": "WA 30m (122 cm Face)"
+"National (Long)": "Long National"
+"National (Short)": "National 50"
+"Short Metric I": "Short Metric"
+"St. Nicholas": "St Nicholas"
+"WA 50m": "WA 50m (122cm Face)"
+"WA 50m (122cm)": "WA 50m (122cm Face)"
+"WA Clout Double 185m": "Double WA Clout 185m"
+"WA Clout Double 165m": "Double WA Clout 165m"
+"WA Clout Double 125m": "Double WA Clout 125m"
+"WA Clout Double 110m": "Double WA Clout 110m"
+"WA Clout Double 90m": "Double WA Clout 90m"
+"WA Clout Double 75m": "Double WA Clout 75m"
+
+# --- Outdoor Classifications ---
+"1st class": "Archer 1st Class"
+"2nd class": "Archer 2nd Class"
+"3rd class": "Archer 3rd Class"
+"Bowman 1st class": "Bowman 1st Class"
+"Bowman 2nd class": "Bowman 2nd Class"
+"Bowman 3rd class": "Bowman 3rd Class"
+"Master Bowman": "Master Bowman"
+"Grand Master Bowman": "Grand Master Bowman"
+"Elite Master Bowman": "Elite Master Bowman"
+
+# --- Indoor Classifications ---
+"IA1": "Indoor Archer 1st Class"
+"IA2": "Indoor Archer 2nd Class"
+"IA3": "Indoor Archer 3rd Class"
+"IB1": "Indoor Bowman 1st Class"
+"IB2": "Indoor Bowman 2nd Class"
+"IB3": "Indoor Bowman 3rd Class"
+"IMB": "Indoor Master Bowman"
+"IGMB": "Indoor Grand Master Bowman"

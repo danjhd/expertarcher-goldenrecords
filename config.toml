@@ -61,7 +61,7 @@ key_param = "apikey"                        # query-string parameter the API key
 club = "Harlequin Bowmen"  # club identifier
 # Fields to return; these are the score fields the pipeline reads. `handicap`
 # feeds the CSV import's Handicap column, and `classification` feeds its
-# Classification column (translated to the Golden Records name via the
-# [classifications] table in mappings.toml). Both are used only by the CSV
-# import (--csv); the JSON API path ignores them.
+# Classification column (translated to the Golden Records name via
+# mappings.yaml). Both are used only by the CSV import (--csv); the JSON API
+# path ignores them.
 select = "date,round,name,class,gender,bowtype,score,hits,golds,competition,tournament,place,xs,Xs,handicap,classification"

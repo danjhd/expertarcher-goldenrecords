@@ -104,10 +104,10 @@ The keys below are exactly what the Golden Records Scores API expects.
 ExpertArcher and Golden Records mostly use the same names for rounds and bow
 types, but not always. `resolve` handles this in two steps:
 
-1. **Translate** the ExpertArcher name via the `[names]` table in
-   [mappings.toml](mappings.toml) — `"ExpertArcher name" = "Golden Records name"`.
-   Only names that differ by more than capitalisation are listed; anything not
-   in the file is used as-is.
+1. **Translate** the ExpertArcher name via [mappings.yaml](mappings.yaml) —
+   one flat mapping of `"ExpertArcher name": "Golden Records name"`. Only names
+   that differ by more than capitalisation are listed; anything not in the file
+   is used as-is.
 2. **Look up** the resulting name in the Golden Records id table
    (`rounds.json` / `bowtypes.json`), **case-insensitively**.
 
@@ -115,10 +115,13 @@ So `"afb"` needs a mapping (→ "American Flatbow"), but `"recurve"` does not
 (matches "Recurve" by case-insensitive lookup). This keeps the hand-maintained
 mappings file as small as possible. Unmatched names are reported, not guessed.
 
-[mappings.toml](mappings.toml) also has a `[classifications]` table used only
-by the CSV import, translating ExpertArcher classifications (e.g. `IB1`,
-`Bowman 2nd class`) to the Golden Records classification name — see
-[Bulk import via CSV](#bulk-import-via-csv).
+The same file also holds the classification mappings (e.g. `IB1` → `Indoor
+Bowman 1st Class`), which are used only by the CSV import — see
+[Bulk import via CSV](#bulk-import-via-csv). Rounds, bow types and
+classifications share one namespace, since they are all name translations and
+no key is ambiguous between them. The only difference is the fallback for a
+name that is *not* listed: rounds and bow types are tried as-is, whereas an
+unmapped classification is left blank.
 
 ## Setup
 
@@ -203,7 +206,7 @@ by name; everything else by detail + archer), so each problem shows once with a
 record count. Skip categories:
 
 - **Unmatched round / bow type** — name unknown to both the mappings and Golden
-  Records → add a mapping in [mappings.toml](mappings.toml) or fix it in
+  Records → add a mapping in [mappings.yaml](mappings.yaml) or fix it in
   ExpertArcher.
 - **Unknown Golden Records round / bow type** — a mapping exists but points at a
   name Golden Records doesn't recognise → the mapping is wrong.
@@ -288,7 +291,7 @@ sample `score-records.csv`:
 | `Name` | member name | The name itself, not the id |
 | `Score` / `Hits` / `Golds` / `Xs` | same | Integers |
 | `Handicap` | `handicap` | From ExpertArcher when in the `select` (see [config.toml](config.toml)); blank otherwise |
-| `Classification` | `classification` | Translated to the Golden Records name via the `[classifications]` table in [mappings.toml](mappings.toml) (e.g. `IB1` → `Indoor Bowman 1st Class`); an unmapped value is left blank |
+| `Classification` | `classification` | Translated to the Golden Records name via [mappings.yaml](mappings.yaml) (e.g. `IB1` → `Indoor Bowman 1st Class`); an unmapped value is left blank |
 | `Location` | `place` | Trimmed free text |
 | `Class` | `bowtype` name | The resolved Golden Records **bow type** name |
 | `Age Group` | `gender` + `class` | e.g. `Men`, `Women`, `Men U16` |
@@ -311,7 +314,7 @@ The file ends with a single `END` sentinel row, as the importer expects.
 app.py                 The whole tool (fetch → map → report → submit / CSV)
 config.toml            API config for both services (no secrets; committed)
 .env.example           Template for the API keys → copy to .env (gitignored)
-mappings.toml          ExpertArcher → Golden Records name overrides
+mappings.yaml          ExpertArcher → Golden Records name overrides
 golden-records/        Cached reference data downloaded from Golden Records
   rounds.json, bowtypes.json, age-groups.json   (committed)
   members.json                                  (gitignored — personal data)
