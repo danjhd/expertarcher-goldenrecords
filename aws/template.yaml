@@ -1,0 +1,250 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Transform:
+  - AWS::LanguageExtensions
+  - AWS::Serverless-2016-10-31
+
+Description: >-
+  Daily ExpertArcher -> Golden Records score sync, as a Step Functions state
+  machine with no Lambda. The state machine calls both APIs over HTTPS directly
+  and emails a report of every run.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: Credentials and notification }
+        Parameters:
+          - GoldenRecordsApiKey
+          - ExpertArcherApiKey
+          - ReportEmail
+      - Label: { default: Schedule }
+        Parameters:
+          - ScheduleExpression
+          - ScheduleTimezone
+          - ScheduleState
+      - Label: { default: Run behaviour }
+        Parameters:
+          - ReferencePageSize
+      - Label: { default: API endpoints (defaults match config.toml) }
+        Parameters:
+          - GoldenRecordsBaseUrl
+          - ExpertArcherBaseUrl
+          - ExpertArcherEndpoint
+          - ExpertArcherClub
+          - ExpertArcherSelect
+
+Parameters:
+  GoldenRecordsApiKey:
+    Type: String
+    NoEcho: true
+    MinLength: 1
+    Description: >-
+      Golden Records API key, sent as "Authorization: Basic <key>". A club-level
+      key is required: HTTP Basic Auth returns only the calling user's own
+      member record, which would leave every other archer unmatched.
+
+  ExpertArcherApiKey:
+    Type: String
+    NoEcho: true
+    MinLength: 1
+    Description: ExpertArcher API key, sent as the "apikey" query-string parameter.
+
+  ReportEmail:
+    Type: String
+    MinLength: 3
+    AllowedPattern: "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+    Description: >-
+      Address the run report is emailed to. AWS sends a subscription
+      confirmation on first deploy which must be accepted before any report
+      arrives.
+
+  ScheduleExpression:
+    Type: String
+    Default: cron(0 7 * * ? *)
+    Description: When to run. Default is 07:00 daily.
+
+  ScheduleTimezone:
+    Type: String
+    Default: Europe/London
+    Description: >-
+      Timezone the schedule is interpreted in, so the run time does not shift
+      with British Summer Time.
+
+  ScheduleState:
+    Type: String
+    Default: DISABLED
+    AllowedValues: [ENABLED, DISABLED]
+    Description: >-
+      Set to DISABLED to deploy without starting the daily run -- useful for the
+      first deploy, so the smoke test happens on demand rather than overnight.
+
+  ReferencePageSize:
+    Type: Number
+    Default: 500
+    MaxValue: 1000
+    Description: Page size for the reference fetches.
+
+  GoldenRecordsBaseUrl:
+    Type: String
+    Default: https://api2.archery-records.net/api
+    AllowedPattern: "^https://.+[^/]$"
+    Description: Golden Records API base URL, no trailing slash. Matches config.toml [api].base_url.
+
+  ExpertArcherBaseUrl:
+    Type: String
+    Default: https://fapi.expertarcher.com
+    AllowedPattern: "^https://.+[^/]$"
+    Description: ExpertArcher API base URL, no trailing slash.
+
+  ExpertArcherEndpoint:
+    Type: String
+    Default: /club
+    Description: Path appended to the ExpertArcher base URL.
+
+  ExpertArcherClub:
+    Type: String
+    Default: Harlequin Bowmen
+    Description: Club identifier sent as the "club" query-string parameter.
+
+  ExpertArcherSelect:
+    Type: String
+    Default: date,round,name,class,gender,bowtype,score,hits,golds,competition,tournament,place,xs,Xs
+    Description: >-
+      Score fields to return. Shorter than config.toml's list because handicap
+      and classification feed only the CSV import, which this state machine does
+      not produce.
+
+Resources:
+  GoldenRecordsConnection:
+    Type: AWS::Events::Connection
+    Properties:
+      Name: !Sub "${AWS::StackName}-golden-records"
+      Description: "Golden Records API -- header: Authorization: Basic <club API key>"
+      AuthorizationType: API_KEY
+      AuthParameters:
+        ApiKeyAuthParameters:
+          ApiKeyName: Authorization
+          ApiKeyValue: !Sub "Basic ${GoldenRecordsApiKey}"
+
+  ExpertArcherConnection:
+    Type: AWS::Events::Connection
+    Properties:
+      Name: !Sub "${AWS::StackName}-expertarcher"
+      Description: ExpertArcher API -- apikey query-string parameter
+      AuthorizationType: API_KEY
+      AuthParameters:
+        ApiKeyAuthParameters:
+          ApiKeyName: apikey
+          ApiKeyValue: !Ref ExpertArcherApiKey
+        InvocationHttpParameters:
+          QueryStringParameters:
+            - Key: apikey
+              Value: !Ref ExpertArcherApiKey
+              IsValueSecret: true
+
+  NameMappingsParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${AWS::StackName}/name-mappings"
+      Type: String
+      DataType: text
+      Description: ExpertArcher -> Golden Records round and bow-type name overrides
+      Value:
+        Fn::ToJsonString:
+          Fn::Transform:
+            Name: AWS::Include
+            Parameters:
+              Location: ../mappings.yaml
+
+  ReportTopic:
+    Type: AWS::SNS::Topic
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W47
+            reason: Kms not required
+    Properties:
+      TopicName: !Sub "${AWS::StackName}-report"
+      DisplayName: Golden Records sync
+
+  ReportSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref ReportTopic
+      Protocol: email
+      Endpoint: !Ref ReportEmail
+
+  SyncStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Ref AWS::StackName
+      Type: STANDARD
+      DefinitionUri: statemachine/sync.asl.yaml
+      DefinitionSubstitutions:
+        GoldenRecordsBaseUrl: !Ref GoldenRecordsBaseUrl
+        GoldenRecordsConnectionArn: !GetAtt GoldenRecordsConnection.Arn
+        ExpertArcherBaseUrl: !Ref ExpertArcherBaseUrl
+        ExpertArcherEndpoint: !Ref ExpertArcherEndpoint
+        ExpertArcherConnectionArn: !GetAtt ExpertArcherConnection.Arn
+        ExpertArcherClub: !Ref ExpertArcherClub
+        ExpertArcherSelect: !Ref ExpertArcherSelect
+        ReportTopicArn: !Ref ReportTopic
+        ReferencePageSize: !Ref ReferencePageSize
+        NameMappingsParameterName: !Ref NameMappingsParameter
+      Events:
+        Daily:
+          Type: ScheduleV2
+          Properties:
+            Name: !Sub ${AWS::StackName}-daily
+            Description: Daily ExpertArcher -> Golden Records sync
+            ScheduleExpression: !Ref ScheduleExpression
+            ScheduleExpressionTimezone: !Ref ScheduleTimezone
+            State: !Ref ScheduleState
+            Input: "{}"
+      Policies:
+        - Statement:
+            - Sid: InvokeThirdPartyApisGet
+              Effect: Allow
+              Action: states:InvokeHTTPEndpoint
+              Resource: !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*
+              Condition:
+                StringEquals:
+                  states:HTTPMethod:
+                    - GET
+                StringLike:
+                  states:HTTPEndpoint:
+                    - !Sub ${GoldenRecordsBaseUrl}/*
+                    - !Sub ${ExpertArcherBaseUrl}/*
+            - Sid: InvokeThirdPartyApisPost
+              Effect: Allow
+              Action: states:InvokeHTTPEndpoint
+              Resource: !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*
+              Condition:
+                StringEquals:
+                  states:HTTPMethod:
+                    - POST
+                StringLike:
+                  states:HTTPEndpoint:
+                    - !Sub ${GoldenRecordsBaseUrl}/*
+        - Statement:
+            - Sid: UseConnections
+              Effect: Allow
+              Action: events:RetrieveConnectionCredentials
+              Resource:
+                - !GetAtt GoldenRecordsConnection.Arn
+                - !GetAtt ExpertArcherConnection.Arn
+            - Sid: ReadConnectionSecrets
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+                - secretsmanager:DescribeSecret
+              Resource:
+                - !GetAtt GoldenRecordsConnection.SecretArn
+                - !GetAtt ExpertArcherConnection.SecretArn
+        - Statement:
+            - Sid: ReadNameMappings
+              Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${NameMappingsParameter}
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt ReportTopic.TopicName

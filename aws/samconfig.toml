@@ -1,0 +1,21 @@
+version = 0.1
+
+[default]
+[default.global.parameters]
+stack_name = "hb-score-sync"
+region = "eu-west-2"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.validate.parameters]
+lint = true
+
+[default.deploy.parameters]
+resolve_s3 = true
+s3_prefix = "hb-score-sync"
+region = "eu-west-2"
+capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
+image_repositories = []
+parameter_overrides = "ReportEmail=\"dan@djohns.com\" GoldenRecordsBaseUrl=\"https://api2.archery-records.net/api\" ExpertArcherBaseUrl=\"https://fapi.expertarcher.com\" ExpertArcherEndpoint=\"/club\" ExpertArcherClub=\"Harlequin Bowmen\" ExpertArcherSelect=\"date,round,name,class,gender,bowtype,score,hits,golds,competition,tournament,place,xs,Xs\""

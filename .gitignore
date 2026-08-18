@@ -15,6 +15,16 @@ submission-errors.log
 # uv / virtual environment
 .venv/
 
+# SAM build artefacts
+aws/.aws-sam/
+
+# Deploy config holding the API keys, used via `sam deploy --config-file`.
+# The committed aws/samconfig.toml has no secrets in it.
+aws/samconfig.local.toml
+
+# Dependencies of the pre-deploy checker in tools/ (package-lock.json is committed)
+tools/node_modules/
+
 # Python
 __pycache__/
 *.pyc

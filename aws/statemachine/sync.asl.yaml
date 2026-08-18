@@ -1,0 +1,786 @@
+QueryLanguage: JSONata
+StartAt: Prepare
+
+States:
+
+  Prepare:
+    Type: Task
+    Resource: arn:aws:states:::aws-sdk:ssm:getParameter
+    Arguments:
+      Name: ${NameMappingsParameterName}
+    Assign:
+      pageSize: >-
+        {% $exists($states.input.pageSize) ? $states.input.pageSize : ${ReferencePageSize} %}
+      dryRun: >-
+        {% $states.input.dryRun = true or $states.input.dryRun = 'true' %}
+      dateFrom: >-
+        {%
+          $states.input.from = null ? ""
+            : $exists($states.input.from) ? $states.input.from
+            : $substringBefore($fromMillis($toMillis($states.context.Execution.StartTime) - 86400000), "T")
+        %}
+      dateTo: >-
+        {%
+          $states.input.to = null ? ""
+            : $exists($states.input.to) ? $states.input.to
+            : $substringBefore($states.context.Execution.StartTime, "T")
+        %}
+      nameMap: >-
+        {% $parse($states.result.Parameter.Value) %}
+    Next: FetchRounds
+
+  FetchRounds:
+    Type: Task
+    Resource: arn:aws:states:::http:invoke
+    Arguments:
+      ApiEndpoint: ${GoldenRecordsBaseUrl}/rounds
+      Method: GET
+      Authentication:
+        ConnectionArn: ${GoldenRecordsConnectionArn}
+      QueryParameters:
+        pageSize: >-
+          {% $pageSize %}
+        pageNumber: 1
+    Retry:
+      - ErrorEquals:
+          - States.Http.StatusCode.429
+          - States.Http.StatusCode.500
+          - States.Http.StatusCode.502
+          - States.Http.StatusCode.503
+          - States.Http.StatusCode.504
+          - States.Http.Socket
+          - States.Timeout
+        IntervalSeconds: 1
+        MaxAttempts: 5
+        BackoffRate: 2
+        MaxDelaySeconds: 60
+        JitterStrategy: FULL
+    Assign:
+      roundMap: >-
+        {% $states.result.ResponseBody[]{$lowercase(round): round_id} %}
+      headers: >-
+        {%
+          (
+            $hdrs := $merge($each($states.result.Headers, function($v, $k) { { $lowercase($k): $v } }));
+            $paging := $lookup($hdrs, 'paging-headers');
+            $exists($paging) ? $parse($paging[0]) : {}
+          )
+        %}
+    Next: FetchRoundsComplete
+
+  FetchRoundsComplete:
+    Type: Choice
+    Choices:
+      - Next: FetchRoundsPaginate
+        Condition: >-
+          {% $headers.nextPage = "Yes" %}
+    Default: FetchBowTypes
+
+  FetchRoundsPaginate:
+    Type: Task
+    Resource: arn:aws:states:::http:invoke
+    Arguments:
+      ApiEndpoint: ${GoldenRecordsBaseUrl}/rounds
+      Method: GET
+      Authentication:
+        ConnectionArn: ${GoldenRecordsConnectionArn}
+      QueryParameters:
+        pageSize: >-
+          {% $pageSize %}
+        pageNumber: >-
+          {% $number($headers.currentPage) + 1 %}
+    Retry:
+      - ErrorEquals:
+          - States.Http.StatusCode.429
+          - States.Http.StatusCode.500
+          - States.Http.StatusCode.502
+          - States.Http.StatusCode.503
+          - States.Http.StatusCode.504
+          - States.Http.Socket
+          - States.Timeout
+        IntervalSeconds: 1
+        MaxAttempts: 5
+        BackoffRate: 2
+        MaxDelaySeconds: 60
+        JitterStrategy: FULL
+    Assign:
+      roundMap: >-
+        {% $merge([$roundMap, $states.result.ResponseBody[]{$lowercase(round): round_id}]) %}
+      headers: >-
+        {%
+          (
+            $hdrs := $merge($each($states.result.Headers, function($v, $k) { { $lowercase($k): $v } }));
+            $paging := $lookup($hdrs, 'paging-headers');
+            $exists($paging) ? $parse($paging[0]) : {}
+          )
+        %}
+    Next: FetchRoundsComplete
+
+  FetchBowTypes:
+    Type: Task
+    Resource: arn:aws:states:::http:invoke
+    Arguments:
+      ApiEndpoint: ${GoldenRecordsBaseUrl}/classes
+      Method: GET
+      Authentication:
+        ConnectionArn: ${GoldenRecordsConnectionArn}
+      QueryParameters:
+        pageSize: >-
+          {% $pageSize %}
+        pageNumber: 1
+    Retry:
+      - ErrorEquals:
+          - States.Http.StatusCode.429
+          - States.Http.StatusCode.500
+          - States.Http.StatusCode.502
+          - States.Http.StatusCode.503
+          - States.Http.StatusCode.504
+          - States.Http.Socket
+          - States.Timeout
+        IntervalSeconds: 1
+        MaxAttempts: 5
+        BackoffRate: 2
+        MaxDelaySeconds: 60
+        JitterStrategy: FULL
+    Assign:
+      classMap: >-
+        {% $states.result.ResponseBody[]{$lowercase(bow_class): class_id} %}
+      headers: >-
+        {%
+          (
+            $hdrs := $merge($each($states.result.Headers, function($v, $k) { { $lowercase($k): $v } }));
+            $paging := $lookup($hdrs, 'paging-headers');
+            $exists($paging) ? $parse($paging[0]) : {}
+          )
+        %}
+    Next: FetchBowTypesComplete
+
+  FetchBowTypesComplete:
+    Type: Choice
+    Choices:
+      - Next: FetchBowTypesPaginate
+        Condition: >-
+          {% $headers.nextPage = "Yes" %}
+    Default: FetchAgeGroups
+
+  FetchBowTypesPaginate:
+    Type: Task
+    Resource: arn:aws:states:::http:invoke
+    Arguments:
+      ApiEndpoint: ${GoldenRecordsBaseUrl}/classes
+      Method: GET
+      Authentication:
+        ConnectionArn: ${GoldenRecordsConnectionArn}
+      QueryParameters:
+        pageSize: >-
+          {% $pageSize %}
+        pageNumber: >-
+          {% $number($headers.currentPage) + 1 %}
+    Retry:
+      - ErrorEquals:
+          - States.Http.StatusCode.429
+          - States.Http.StatusCode.500
+          - States.Http.StatusCode.502
+          - States.Http.StatusCode.503
+          - States.Http.StatusCode.504
+          - States.Http.Socket
+          - States.Timeout
+        IntervalSeconds: 1
+        MaxAttempts: 5
+        BackoffRate: 2
+        MaxDelaySeconds: 60
+        JitterStrategy: FULL
+    Assign:
+      classMap: >-
+        {% $merge([$classMap, $states.result.ResponseBody[]{$lowercase(bow_class): class_id}]) %}
+      headers: >-
+        {%
+          (
+            $hdrs := $merge($each($states.result.Headers, function($v, $k) { { $lowercase($k): $v } }));
+            $paging := $lookup($hdrs, 'paging-headers');
+            $exists($paging) ? $parse($paging[0]) : {}
+          )
+        %}
+    Next: FetchBowTypesComplete
+
+  FetchAgeGroups:
+    Type: Task
+    Resource: arn:aws:states:::http:invoke
+    Arguments:
+      ApiEndpoint: ${GoldenRecordsBaseUrl}/age-groups
+      Method: GET
+      Authentication:
+        ConnectionArn: ${GoldenRecordsConnectionArn}
+      QueryParameters:
+        pageSize: >-
+          {% $pageSize %}
+        pageNumber: 1
+    Retry:
+      - ErrorEquals:
+          - States.Http.StatusCode.429
+          - States.Http.StatusCode.500
+          - States.Http.StatusCode.502
+          - States.Http.StatusCode.503
+          - States.Http.StatusCode.504
+          - States.Http.Socket
+          - States.Timeout
+        IntervalSeconds: 1
+        MaxAttempts: 5
+        BackoffRate: 2
+        MaxDelaySeconds: 60
+        JitterStrategy: FULL
+    Assign:
+      ageGroupMap: >-
+        {% $states.result.ResponseBody[]{age_group: age_group_id} %}
+      headers: >-
+        {%
+          (
+            $hdrs := $merge($each($states.result.Headers, function($v, $k) { { $lowercase($k): $v } }));
+            $paging := $lookup($hdrs, 'paging-headers');
+            $exists($paging) ? $parse($paging[0]) : {}
+          )
+        %}
+    Next: FetchAgeGroupsComplete
+
+  FetchAgeGroupsComplete:
+    Type: Choice
+    Choices:
+      - Next: FetchAgeGroupsPaginate
+        Condition: >-
+          {% $headers.nextPage = "Yes" %}
+    Default: FetchMembers
+
+  FetchAgeGroupsPaginate:
+    Type: Task
+    Resource: arn:aws:states:::http:invoke
+    Arguments:
+      ApiEndpoint: ${GoldenRecordsBaseUrl}/age-groups
+      Method: GET
+      Authentication:
+        ConnectionArn: ${GoldenRecordsConnectionArn}
+      QueryParameters:
+        pageSize: >-
+          {% $pageSize %}
+        pageNumber: >-
+          {% $number($headers.currentPage) + 1 %}
+    Retry:
+      - ErrorEquals:
+          - States.Http.StatusCode.429
+          - States.Http.StatusCode.500
+          - States.Http.StatusCode.502
+          - States.Http.StatusCode.503
+          - States.Http.StatusCode.504
+          - States.Http.Socket
+          - States.Timeout
+        IntervalSeconds: 1
+        MaxAttempts: 5
+        BackoffRate: 2
+        MaxDelaySeconds: 60
+        JitterStrategy: FULL
+    Assign:
+      ageGroupMap: >-
+        {% $merge([$ageGroupMap, $states.result.ResponseBody[]{age_group: age_group_id}]) %}
+      headers: >-
+        {%
+          (
+            $hdrs := $merge($each($states.result.Headers, function($v, $k) { { $lowercase($k): $v } }));
+            $paging := $lookup($hdrs, 'paging-headers');
+            $exists($paging) ? $parse($paging[0]) : {}
+          )
+        %}
+    Next: FetchAgeGroupsComplete
+
+  FetchMembers:
+    Type: Task
+    Resource: arn:aws:states:::http:invoke
+    Arguments:
+      ApiEndpoint: ${GoldenRecordsBaseUrl}/members
+      Method: GET
+      Authentication:
+        ConnectionArn: ${GoldenRecordsConnectionArn}
+      QueryParameters:
+        pageSize: >-
+          {% $pageSize %}
+        pageNumber: 1
+    Retry:
+      - ErrorEquals:
+          - States.Http.StatusCode.429
+          - States.Http.StatusCode.500
+          - States.Http.StatusCode.502
+          - States.Http.StatusCode.503
+          - States.Http.StatusCode.504
+          - States.Http.Socket
+          - States.Timeout
+        IntervalSeconds: 1
+        MaxAttempts: 5
+        BackoffRate: 2
+        MaxDelaySeconds: 60
+        JitterStrategy: FULL
+    Assign:
+      memberMap: >-
+        {% $states.result.ResponseBody[]{name: member_id} %}
+      headers: >-
+        {%
+          (
+            $hdrs := $merge($each($states.result.Headers, function($v, $k) { { $lowercase($k): $v } }));
+            $paging := $lookup($hdrs, 'paging-headers');
+            $exists($paging) ? $parse($paging[0]) : {}
+          )
+        %}
+    Next: FetchMembersComplete
+
+  FetchMembersComplete:
+    Type: Choice
+    Choices:
+      - Next: FetchMembersPaginate
+        Condition: >-
+          {% $headers.nextPage = "Yes" %}
+    Default: FetchScores
+
+  FetchMembersPaginate:
+    Type: Task
+    Resource: arn:aws:states:::http:invoke
+    Arguments:
+      ApiEndpoint: ${GoldenRecordsBaseUrl}/members
+      Method: GET
+      Authentication:
+        ConnectionArn: ${GoldenRecordsConnectionArn}
+      QueryParameters:
+        pageSize: >-
+          {% $pageSize %}
+        pageNumber: >-
+          {% $number($headers.currentPage) + 1 %}
+    Retry:
+      - ErrorEquals:
+          - States.Http.StatusCode.429
+          - States.Http.StatusCode.500
+          - States.Http.StatusCode.502
+          - States.Http.StatusCode.503
+          - States.Http.StatusCode.504
+          - States.Http.Socket
+          - States.Timeout
+        IntervalSeconds: 1
+        MaxAttempts: 5
+        BackoffRate: 2
+        MaxDelaySeconds: 60
+        JitterStrategy: FULL
+    Assign:
+      memberMap: >-
+        {% $merge([$memberMap, $states.result.ResponseBody[]{name: member_id}]) %}
+      headers: >-
+        {%
+          (
+            $hdrs := $merge($each($states.result.Headers, function($v, $k) { { $lowercase($k): $v } }));
+            $paging := $lookup($hdrs, 'paging-headers');
+            $exists($paging) ? $parse($paging[0]) : {}
+          )
+        %}
+    Next: FetchMembersComplete
+
+  FetchScores:
+    Type: Task
+    Resource: arn:aws:states:::http:invoke
+    Arguments:
+      ApiEndpoint: ${ExpertArcherBaseUrl}${ExpertArcherEndpoint}
+      Method: GET
+      Authentication:
+        ConnectionArn: ${ExpertArcherConnectionArn}
+      QueryParameters: >-
+        {%
+          {
+            "club": "${ExpertArcherClub}",
+            "select": "${ExpertArcherSelect}",
+            "from": $dateFrom != "" ? $dateFrom,
+            "to": $dateTo != "" ? $dateTo
+          }
+        %}
+    Output: "{% { 'scores': [$states.result.ResponseBody] } %}"
+    Retry:
+      - ErrorEquals:
+          - States.Http.StatusCode.429
+          - States.Http.StatusCode.500
+          - States.Http.StatusCode.502
+          - States.Http.StatusCode.503
+          - States.Http.StatusCode.504
+          - States.Http.Socket
+          - States.Timeout
+        IntervalSeconds: 1
+        MaxAttempts: 5
+        BackoffRate: 2
+        MaxDelaySeconds: 60
+        JitterStrategy: FULL
+    Next: ProcessScores
+
+  ProcessScores:
+    Type: Map
+    Items: "{% $states.input.scores %}"
+    MaxConcurrency: 1
+    Assign:
+      outcomes: "{% $states.result %}"
+    ItemProcessor:
+      ProcessorConfig:
+        Mode: INLINE
+      StartAt: ResolveNames
+      States:
+
+        ResolveNames:
+          Type: Pass
+          Assign:
+            archer: "{% $states.input.name & '' %}"
+            grRound: >-
+              {%
+                (
+                  $mapped := $lookup($nameMap, $states.input.round);
+                  ($exists($mapped) ? $mapped : $states.input.round) & ''
+                )
+              %}
+            grBowtype: >-
+              {%
+                (
+                  $mapped := $lookup($nameMap, $states.input.bowtype);
+                  ($exists($mapped) ? $mapped : $states.input.bowtype) & ''
+                )
+              %}
+            ageName: >-
+              {%
+                (
+                  $prefix := $lookup({ 'male': 'Men', 'female': 'Women' }, $states.input.gender);
+                  $exists($prefix) ? $trim($prefix & ' ' & ($states.input.class = 'senior' ? '' : $uppercase($states.input.class))) : ''
+                )
+              %}
+            day: "{% $substringBefore($states.input.date & '', 'T') %}"
+          Next: ValidateValues
+
+        ValidateValues:
+          Type: Pass
+          Assign:
+            numbersOk: >-
+              {%
+                (
+                  $isInt := function($v) {(
+                    $t := $string($v);
+                    $exists($v) and $t != '' and $count($filter($split($t, ''), function($c) { $c < '0' or $c > '9' })) = 0
+                  )};
+                  $isInt($states.input.score) and $isInt($states.input.hits) and $isInt($states.input.golds)
+                )
+              %}
+            xs: >-
+              {%
+                (
+                  $int := function($v) {(
+                    $t := $string($v);
+                    $exists($v) and $t != '' and $count($filter($split($t, ''), function($c) { $c < '0' or $c > '9' })) = 0 ? $number($t) : 0
+                  )};
+                  $max([$int($states.input.xs), $int($states.input.Xs)])
+                )
+              %}
+            dateOk: >-
+              {%
+                (
+                  $millis := $toMillis($day, '[Y0001]-[M01]-[D01]');
+                  $exists($millis) and $substringBefore($fromMillis($millis), 'T') = $day
+                )
+              %}
+          Next: CheckRound
+
+        CheckRound:
+          Type: Choice
+          Choices:
+            - Condition: "{% $exists($lookup($roundMap, $lowercase($grRound))) %}"
+              Next: CheckBowType
+            - Condition: "{% $exists($lookup($nameMap, $states.input.round)) %}"
+              Next: SkipBadRoundMapping
+          Default: SkipUnmatchedRound
+
+        CheckBowType:
+          Type: Choice
+          Choices:
+            - Condition: "{% $exists($lookup($classMap, $lowercase($grBowtype))) %}"
+              Next: CheckMember
+            - Condition: "{% $exists($lookup($nameMap, $states.input.bowtype)) %}"
+              Next: SkipBadBowTypeMapping
+          Default: SkipUnmatchedBowType
+
+        CheckMember:
+          Type: Choice
+          Choices:
+            - Condition: "{% $exists($lookup($memberMap, $archer)) %}"
+              Next: CheckAgeGroup
+          Default: SkipUnmatchedMember
+
+        CheckAgeGroup:
+          Type: Choice
+          Choices:
+            - Condition: "{% $exists($lookup($ageGroupMap, $ageName)) %}"
+              Next: CheckNumbers
+          Default: SkipUnmatchedAgeGroup
+
+        CheckNumbers:
+          Type: Choice
+          Choices:
+            - Condition: "{% $numbersOk %}"
+              Next: CheckDate
+          Default: SkipInvalidNumber
+
+        CheckDate:
+          Type: Choice
+          Choices:
+            - Condition: "{% $dateOk %}"
+              Next: BuildBody
+          Default: SkipInvalidDate
+
+        BuildBody:
+          Type: Pass
+          Output: >-
+            {%
+              (
+                $score := $states.input;
+                $truthy := function($v) { $exists($v) and $v != false and $v != 0 and $v != '' };
+                $tournament := $truthy($score.tournament);
+                {
+                  'age_group_id': $lookup($ageGroupMap, $ageName),
+                  'class_id': $lookup($classMap, $lowercase($grBowtype)),
+                  'date_shot': $day,
+                  'member_id': $lookup($memberMap, $archer),
+                  'golds': $number($score.golds),
+                  'hits': $number($score.hits),
+                  'location': $string($score.place) = $score.place ? $trim($score.place) : '',
+                  'qualifying': $not($contains($string($score.round), '252')),
+                  'record_qualifying': true,
+                  'record_status': $tournament,
+                  'round_id': $lookup($roundMap, $lowercase($grRound)),
+                  'score': $number($score.score),
+                  'status': $tournament ? 4 : ($truthy($score.competition) ? 3 : 2),
+                  'user_1': 'Expert Archer',
+                  'Xs': $xs
+                }
+              )
+            %}
+          Next: CheckDryRun
+
+        CheckDryRun:
+          Type: Choice
+          Choices:
+            - Condition: "{% $dryRun %}"
+              Next: DryRun
+          Default: PaceRequest
+
+        DryRun:
+          Type: Pass
+          Output: >-
+            {% { 'state': 'dryRun', 'archer': $archer, 'date': $day, 'body': $states.input } %}
+          End: True
+
+        PaceRequest:
+          Type: Wait
+          Seconds: 3
+          Next: PostScore
+
+        PostScore:
+          Type: Task
+          Resource: arn:aws:states:::http:invoke
+          Arguments:
+            ApiEndpoint: ${GoldenRecordsBaseUrl}/scores
+            Method: POST
+            Authentication:
+              ConnectionArn: ${GoldenRecordsConnectionArn}
+            Headers:
+              Content-Type: application/json
+            RequestBody: "{% $states.input %}"
+          Retry:
+            - ErrorEquals:
+                - States.Http.StatusCode.429
+                - States.Http.StatusCode.500
+                - States.Http.StatusCode.502
+                - States.Http.StatusCode.503
+                - States.Http.StatusCode.504
+                - States.Http.Socket
+                - States.Timeout
+              IntervalSeconds: 1
+              MaxAttempts: 5
+              BackoffRate: 2
+              MaxDelaySeconds: 60
+              JitterStrategy: FULL
+          Catch:
+            - ErrorEquals:
+                - States.ALL
+              Output: >-
+                {%
+                  (
+                    $cause := $string($states.errorOutput.Cause) & '';
+                    $inner := $contains($cause, 'errors')
+                      ? $substringAfter($substringBefore($substringAfter($cause, 'errors'), ']'), '[')
+                      : '';
+                    $msgs := $filter($split($replace($inner, '\\', ''), '"'), function($v, $i) { $i % 2 = 1 });
+                    {
+                      'state': $contains($cause, 'This score already exists in the database.') ? 'duplicate' : 'rejected',
+                      'archer': $archer,
+                      'date': $day,
+                      'error': $states.errorOutput.Error,
+                      'message': $count($msgs) > 0
+                        ? $join($msgs, '; ')
+                        : ($cause != '' ? $substring($cause, 0, 200) : $string($states.errorOutput.Error) & '')
+                    }
+                  )
+                %}
+              Next: Rejected
+          Next: Recorded
+
+        Recorded:
+          Type: Pass
+          Output: "{% { 'state': 'submitted', 'archer': $archer, 'date': $day } %}"
+          End: True
+
+        Rejected:
+          Type: Pass
+          End: True
+
+        SkipUnmatchedRound:
+          Type: Pass
+          Output: >-
+            {% { 'state': 'skipped', 'cat': 'unmatched round', 'detail': $string($states.input.round), 'archer': $archer, 'date': $day } %}
+          End: True
+
+        SkipBadRoundMapping:
+          Type: Pass
+          Output: >-
+            {% { 'state': 'skipped', 'cat': 'unknown Golden Records round', 'detail': $string($states.input.round) & ' -> ' & $grRound, 'archer': $archer, 'date': $day } %}
+          End: True
+
+        SkipUnmatchedBowType:
+          Type: Pass
+          Output: >-
+            {% { 'state': 'skipped', 'cat': 'unmatched bow type', 'detail': $string($states.input.bowtype), 'archer': $archer, 'date': $day } %}
+          End: True
+
+        SkipBadBowTypeMapping:
+          Type: Pass
+          Output: >-
+            {% { 'state': 'skipped', 'cat': 'unknown Golden Records bow type', 'detail': $string($states.input.bowtype) & ' -> ' & $grBowtype, 'archer': $archer, 'date': $day } %}
+          End: True
+
+        SkipUnmatchedMember:
+          Type: Pass
+          Output: >-
+            {% { 'state': 'skipped', 'cat': 'unmatched member name', 'detail': $archer, 'archer': $archer, 'date': $day } %}
+          End: True
+
+        SkipUnmatchedAgeGroup:
+          Type: Pass
+          Output: >-
+            {% { 'state': 'skipped', 'cat': 'unmatched age group', 'detail': $string($states.input.gender) & '/' & $string($states.input.class) & ' -> ' & $ageName, 'archer': $archer, 'date': $day } %}
+          End: True
+
+        SkipInvalidNumber:
+          Type: Pass
+          Output: >-
+            {% { 'state': 'skipped', 'cat': 'invalid number', 'detail': 'score=' & $string($states.input.score) & ' hits=' & $string($states.input.hits) & ' golds=' & $string($states.input.golds), 'archer': $archer, 'date': $day } %}
+          End: True
+
+        SkipInvalidDate:
+          Type: Pass
+          Output: >-
+            {% { 'state': 'skipped', 'cat': 'invalid date', 'detail': $string($states.input.date), 'archer': $archer, 'date': $day } %}
+          End: True
+
+    Next: BuildReport
+
+  BuildReport:
+    Type: Pass
+    Assign:
+      submitted: "{% $count($outcomes[state = 'submitted']) %}"
+      duplicates: "{% $count($outcomes[state = 'duplicate']) %}"
+      rejected: "{% $count($outcomes[state = 'rejected']) %}"
+      skipped: "{% $count($outcomes[state = 'skipped']) %}"
+      previewed: "{% $count($outcomes[state = 'dryRun']) %}"
+      skipLines: >-
+        {%
+          (
+            $skips := $outcomes[state = 'skipped'];
+            $tally := function($rows, $keyOf) {
+              $reduce($rows, function($acc, $row) {(
+                $key := $keyOf($row);
+                $seen := $lookup($acc, $key);
+                $merge([$acc, { $key: ($exists($seen) ? $seen : 0) + 1 }])
+              )}, {})
+            };
+            $sorted := function($lines) { $join($sort([$lines], function($a, $b) { $a > $b }), '\n') };
+            $labelOf := function($s) {
+              $s.cat = 'unmatched member name' ? $s.detail : $s.detail & '  |  ' & $s.archer
+            };
+            $section := function($n, $cat) {(
+              $rows := $filter($skips, function($s) { $s.cat = $cat });
+              $cat & ':\n' & $sorted($each($tally($rows, $labelOf), function($count, $label) {
+                '\t' & $label & ' (' & $count & ' record' & ($count = 1 ? '' : 's') & ')'
+              }))
+            )};
+            $join($sort([$each($tally($skips, function($s) { $s.cat }), $section)],
+              function($a, $b) { $a > $b }), '\n\n')
+          )
+        %}
+      rejectLines: >-
+        {%
+          (
+            $rejects := $outcomes[state = 'rejected'];
+            $tally := function($rows, $keyOf) {
+              $reduce($rows, function($acc, $row) {(
+                $key := $keyOf($row);
+                $seen := $lookup($acc, $key);
+                $merge([$acc, { $key: ($exists($seen) ? $seen : 0) + 1 }])
+              )}, {})
+            };
+            $sorted := function($lines) { $join($sort([$lines], function($a, $b) { $a > $b }), '\n') };
+            $group := function($count, $message) {(
+              $rows := $filter($rejects, function($r) { $r.message = $message });
+              $message & ' (' & $count & ' record' & ($count = 1 ? '' : 's') & ')\n'
+                & $sorted($map($rows, function($r) { '\t' & $r.archer & '  |  ' & $r.date }))
+            )};
+            $join($sort([$each($tally($rejects, function($r) { $r.message }), $group)],
+              function($a, $b) { $a > $b }), '\n\n')
+          )
+        %}
+      previewLines: >-
+        {%
+          $join([$outcomes[state = 'dryRun'].(archer & '  |  ' & body.date_shot & '  |  ' & body.score & '/' & body.hits & '/' & body.golds)], '\n')
+        %}
+    Next: SendReport
+
+  SendReport:
+    Type: Task
+    Resource: arn:aws:states:::sns:publish
+    Arguments:
+      TopicArn: ${ReportTopicArn}
+      Subject: >-
+        {%
+          $dryRun
+            ? '[DRY RUN] Golden Records sync: ' & $previewed & ' to submit, ' & $skipped & ' skipped'
+            : 'Golden Records sync: ' & $submitted & ' submitted, ' & $duplicates & ' duplicate, ' & $rejected & ' rejected, ' & $skipped & ' skipped'
+        %}
+      Message: >-
+        {%
+          $join([
+            $dryRun ? 'DRY RUN -- nothing was submitted to Golden Records.',
+            'Window: ' & ($dateFrom = '' ? '(no lower bound)' : $dateFrom) & ' to ' & ($dateTo = '' ? '(no upper bound)' : $dateTo),
+            'Records read: ' & $count($outcomes),
+            $dryRun ? 'Would submit: ' & $previewed : 'Submitted: ' & $submitted,
+            $duplicates > 0 ? 'Duplicates (already in Golden Records): ' & $duplicates,
+            $rejected > 0 ? 'Rejected: ' & $rejected,
+            $skipped > 0 ? 'Skipped: ' & $skipped,
+            $skipped = 0 and $rejected = 0 ? 'No problems to report.',
+            $skipped > 0 ? '\nSKIPPED RECORDS BY REASON\n=========================\n\n' & $skipLines,
+            $rejected > 0 ? '\nSUBMISSION ERRORS\n=================\n\n' & $rejectLines,
+            $dryRun and $previewed > 0 ? '\nRECORDS THAT WOULD BE SUBMITTED\n===============================\n\n' & $previewLines
+          ], '\n')
+        %}
+    Output: >-
+      {%
+        {
+          'dryRun': $dryRun,
+          'read': $count($outcomes),
+          'submitted': $submitted,
+          'duplicates': $duplicates,
+          'rejected': $rejected,
+          'skipped': $skipped
+        }
+      %}
+    End: True

@@ -11,6 +11,11 @@ can be fixed at source.
 It is intentionally a single, readable script ([app.py](app.py)) rather than a
 framework — the goal is to make the integration easy to follow.
 
+To run the submission path unattended on a daily schedule, there is an AWS
+Step Functions deployment of the same integration in [`aws/`](aws/README.md) —
+no Lambda, and it emails a report of every run. `app.py` stays the reference
+implementation, and the only way to produce a CSV bulk-import file.
+
 ## How it works
 
 ```mermaid
@@ -322,6 +327,13 @@ score-records.csv      Golden Records' sample CSV import file (fake data; commit
 *-import.csv           Generated CSV import files (gitignored — contain member names)
 submission-errors.log  Full detail of rejected submissions (gitignored; per run)
 pyproject.toml         Dependencies / uv project
+aws/                   Daily unattended sync on AWS -- see aws/README.md
+  template.yaml                SAM template (connections, SNS, state machine, schedule)
+  statemachine/sync.asl.yaml   Step Functions definition (YAML ASL, JSONata, no Lambda)
+  samconfig.toml               Deploy settings (no secrets; committed)
+tools/                 Pre-deploy checks for the state machine definition
+  gen_asl_names.py             Generates its name mappings from mappings.yaml
+  check_statemachine.js        Compiles the JSONata and tests it against app.py's contract
 ```
 
 ## Notes on data & privacy
