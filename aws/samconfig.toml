@@ -15,7 +15,6 @@ lint = true
 [default.deploy.parameters]
 resolve_s3 = true
 s3_prefix = "hb-score-sync"
-region = "eu-west-2"
 capabilities = "CAPABILITY_IAM CAPABILITY_AUTO_EXPAND"
 image_repositories = []
-parameter_overrides = "ReportEmail=\"dan@djohns.com\" GoldenRecordsBaseUrl=\"https://api2.archery-records.net/api\" ExpertArcherBaseUrl=\"https://fapi.expertarcher.com\" ExpertArcherEndpoint=\"/club\" ExpertArcherClub=\"Harlequin Bowmen\" ExpertArcherSelect=\"date,round,name,class,gender,bowtype,score,hits,golds,competition,tournament,place,xs,Xs\""
+parameter_overrides = "ReportEmail=\"dan@djohns.com\" ScheduleExpression=\"cron(0 7 * * ? *)\" ScheduleTimezone=\"Europe/London\" ScheduleState=\"ENABLED\" ReferencePageSize=\"500\" GoldenRecordsBaseUrl=\"https://api2.archery-records.net/api\" ExpertArcherBaseUrl=\"https://fapi.expertarcher.com\" ExpertArcherEndpoint=\"/club\" ExpertArcherClub=\"Harlequin Bowmen\" ExpertArcherSelect=\"date,round,name,class,gender,bowtype,score,hits,golds,competition,tournament,place,xs,Xs\""
