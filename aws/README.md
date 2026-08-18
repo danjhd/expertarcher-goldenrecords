@@ -59,12 +59,14 @@ first discovered by a run failing. There is no local checker; use `--input
 ```
 Prepare                 read the name mappings from SSM, derive the date window
   ↓
+FetchScores             1 GET to ExpertArcher for the window
+  ↓
+HaveScores              empty window? → Done, having called Golden Records
+  ↓                     not once
 FetchRounds     ─┐
 FetchBowTypes    │  4 paginated GETs to Golden Records. Each page is projected
-FetchAgeGroups   │  straight down to a {name: id} map, so the 82 KB rounds
-FetchMembers    ─┘  payload never travels past the state that fetched it.
-  ↓
-FetchScores             1 GET to ExpertArcher for the window
+FetchAgeGroups   │  straight down to a {name: id} map, so the 82 KB rounds body
+FetchMembers    ─┘  is read once and never looked at again.
   ↓
 ProcessScores           Map, MaxConcurrency 1, one record at a time:
                           resolve names → validate → build the POST body
@@ -72,8 +74,28 @@ ProcessScores           Map, MaxConcurrency 1, one record at a time:
                             submitted / duplicate / rejected-with-the-API's-
                             -own-message, or skipped with a reason
   ↓
-BuildReport → SendReport (SNS email)
+BuildReport → SendReport (SNS email) → Done
 ```
+
+**The score fetch comes first on purpose.** The reference data is only needed to
+map a score, so a window with nothing in it should not spend any of the Golden
+Records request budget — and that budget is small (see
+[Throttling and limits](#throttling-and-limits)). `HaveScores` is a Choice on
+`$count($scores) > 0`; when it is empty the execution goes straight to `Done`,
+so an empty day costs exactly one ExpertArcher GET.
+
+**No report is emailed on an empty day.** That is the one cost of the short
+circuit: silence now means either "nothing was shot" or "the run failed" (see
+[Failures](#operating-it)). To email a zero-record report instead, point
+`HaveScores`'s `Default` at `BuildReport` and initialise `outcomes` to `[]` in
+`Prepare` — `BuildReport` reads that variable and it is otherwise only assigned
+by `ProcessScores`.
+
+The score list is held in the `$scores` variable rather than passed along as
+state output, because the reference fetches now sit between `FetchScores` and
+`ProcessScores` and each one's output is its own HTTP response — passing the
+scores through would mean adding an `Output` to all eight fetch states that
+forwards them.
 
 Each `Fetch*` state is followed by a `*Complete` Choice and a `*Paginate` state:
 the Golden Records `paging-headers` response header is parsed, and while
@@ -196,6 +218,10 @@ aws stepfunctions start-execution --region eu-west-2 \
 Check the report email against a local `python app.py --dry-run --from … --to …`
 over the same window. The counts and the skip reasons should agree.
 
+If no email arrives, check the execution first: an empty window ends at `Done`
+via `HaveScores` and sends nothing. Pass an explicit `from`/`to` covering a day
+you know has scores to exercise the full path.
+
 ```bash
 # 2. A real run over a single day, to confirm submission end to end.
 aws stepfunctions start-execution --region eu-west-2 \
@@ -255,10 +281,14 @@ state with a `Catch`, and it exists so that one unsubmittable record is reported
 rather than killing the run — a rejected score no longer throws at all, since the
 function returns the outcome for any status. Anything else that fails —
 `Prepare`, a reference fetch, `FetchScores`, the Map itself, or `SendReport` —
-fails the execution with no email. **A day with no report email is the signal
-that something went wrong**, and the reason is in the execution history. Adding a
-`Catch` on those states, and a `Retry` on `SendReport`, is the obvious next
-improvement.
+fails the execution with no email. Adding a `Catch` on those states, and a
+`Retry` on `SendReport`, is the obvious next improvement.
+
+**A day with no report email means one of two things**: nothing was shot in the
+window (`HaveScores` short-circuited to `Done`), or the run failed. The two are
+told apart by the execution status in the Step Functions console — `Succeeded`
+with `HaveScores` as its last state is the quiet day, and a failed execution
+carries the reason in its history.
 
 **Logs.** Execution history is kept for 90 days and is the record of the run
 itself — the state machine has no CloudWatch Logs or X-Ray configuration.

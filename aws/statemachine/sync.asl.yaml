@@ -27,7 +27,55 @@ States:
         %}
       nameMap: >-
         {% $parse($states.result.Parameter.Value) %}
-    Next: FetchRounds
+    Next: FetchScores
+
+  FetchScores:
+    Type: Task
+    Resource: arn:aws:states:::http:invoke
+    Arguments:
+      ApiEndpoint: ${ExpertArcherBaseUrl}${ExpertArcherEndpoint}
+      Method: GET
+      Authentication:
+        ConnectionArn: ${ExpertArcherConnectionArn}
+      QueryParameters: >-
+        {%
+          {
+            "club": "${ExpertArcherClub}",
+            "select": "${ExpertArcherSelect}",
+            "from": $dateFrom != "" ? $dateFrom,
+            "to": $dateTo != "" ? $dateTo
+          }
+        %}
+    Retry:
+      - ErrorEquals:
+          - States.Http.StatusCode.429
+          - States.Http.StatusCode.500
+          - States.Http.StatusCode.502
+          - States.Http.StatusCode.503
+          - States.Http.StatusCode.504
+          - States.Http.Socket
+          - States.Timeout
+        IntervalSeconds: 1
+        MaxAttempts: 5
+        BackoffRate: 2
+        MaxDelaySeconds: 60
+        JitterStrategy: FULL
+    # Held in a variable, not the state output: the reference fetches run
+    # between here and ProcessScores and would each have to forward it.
+    Assign:
+      scores: >-
+        {% [$states.result.ResponseBody] %}
+    Next: HaveScores
+
+  # Nothing to submit means none of the reference data is needed, so an empty
+  # window costs one ExpertArcher call and no Golden Records calls at all.
+  HaveScores:
+    Type: Choice
+    Choices:
+      - Next: FetchRounds
+        Condition: >-
+          {% $count($scores) > 0 %}
+    Default: Done
 
   FetchRounds:
     Type: Task
@@ -335,7 +383,7 @@ States:
       - Next: FetchMembersPaginate
         Condition: >-
           {% $headers.nextPage = "Yes" %}
-    Default: FetchScores
+    Default: ProcessScores
 
   FetchMembersPaginate:
     Type: Task
@@ -377,43 +425,9 @@ States:
         %}
     Next: FetchMembersComplete
 
-  FetchScores:
-    Type: Task
-    Resource: arn:aws:states:::http:invoke
-    Arguments:
-      ApiEndpoint: ${ExpertArcherBaseUrl}${ExpertArcherEndpoint}
-      Method: GET
-      Authentication:
-        ConnectionArn: ${ExpertArcherConnectionArn}
-      QueryParameters: >-
-        {%
-          {
-            "club": "${ExpertArcherClub}",
-            "select": "${ExpertArcherSelect}",
-            "from": $dateFrom != "" ? $dateFrom,
-            "to": $dateTo != "" ? $dateTo
-          }
-        %}
-    Output: "{% { 'scores': [$states.result.ResponseBody] } %}"
-    Retry:
-      - ErrorEquals:
-          - States.Http.StatusCode.429
-          - States.Http.StatusCode.500
-          - States.Http.StatusCode.502
-          - States.Http.StatusCode.503
-          - States.Http.StatusCode.504
-          - States.Http.Socket
-          - States.Timeout
-        IntervalSeconds: 1
-        MaxAttempts: 5
-        BackoffRate: 2
-        MaxDelaySeconds: 60
-        JitterStrategy: FULL
-    Next: ProcessScores
-
   ProcessScores:
     Type: Map
-    Items: "{% $states.input.scores %}"
+    Items: "{% $scores %}"
     MaxConcurrency: 1
     Assign:
       outcomes: "{% $states.result %}"
@@ -800,4 +814,7 @@ States:
           'skipped': $skipped
         }
       %}
-    End: True
+    Next: Done
+
+  Done:
+    Type: Succeed
