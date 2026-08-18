@@ -1,27 +1,56 @@
 # Daily sync on AWS
 
 The same integration as [`app.py`](../app.py), running unattended once a day as
-an **AWS Step Functions state machine** with **no Lambda**. The state machine
-calls both APIs over HTTPS itself, maps the scores in JSONata, submits them
-inside the Golden Records throttle, and emails a report of every run.
+an **AWS Step Functions state machine**. Every fetch and every mapping step is a
+native state; the only code is one small Lambda that performs the POST, for the
+reason below. The state machine emails a report of every run.
 
 `app.py` remains the reference implementation and the only way to produce a
 [CSV bulk-import file](../README.md#bulk-import-via-csv). This deployment covers
 the API-submission path only.
 
-## Why no Lambda
+## Why (almost) no Lambda
 
-Every step is a native state, so there is no deployment package, no runtime to
-keep patched, no cold start, and the whole transformation is readable in the
-definition rather than hidden inside code. The two things that would normally
-force a Lambda — calling a third-party API, and reshaping JSON — are handled by
-the [HTTP Task](https://docs.aws.amazon.com/step-functions/latest/dg/connect-third-party-apis.html)
-and by [JSONata](https://docs.aws.amazon.com/step-functions/latest/dg/transforming-data.html)
-respectively.
+The two things that would normally force a Lambda — calling a third-party API,
+and reshaping JSON — are handled by the
+[HTTP Task](https://docs.aws.amazon.com/step-functions/latest/dg/connect-third-party-apis.html)
+and by [JSONata](https://docs.aws.amazon.com/step-functions/latest/dg/transforming-data.html).
+So the reference fetches, the score fetch, the whole mapping and the report are
+native states: no deployment package, no cold start, and the transformation is
+readable in the definition rather than hidden inside code.
 
-The cost is that the mapping logic is expressed in JSONata rather than Python,
-and that **JSONata is not validated at deploy time** — a bad expression is first
-discovered by a run failing. There is no local checker; use `--input
+**The POST is the exception, and it has to be.** When an API returns a non-2xx,
+the HTTP Task throws and **discards the response body**. All that survives is
+the error name and the HTTP status text:
+
+```
+"error": "States.Http.StatusCode.400",
+"cause": "Bad Request"          <- the entire cause
+```
+
+Golden Records puts the reason a score was rejected in that body
+(`{"errors":["This score already exists in the database."]}`), so with an HTTP
+Task there is no expression that can reach it: every rejection reports as "Bad
+Request", and duplicates cannot be told apart from genuine validation errors.
+There is no option to make the task succeed on a 4xx — the raw response is
+visible only through `TestState --inspection-level TRACE`, a debugging feature
+not available to a running execution.
+
+So `PostScore` invokes a small Python function
+([`function/submit_score/app.py`](function/submit_score/app.py)) that POSTs the
+score and returns `{statusCode, ok, duplicate, errors}` for *any* status. It
+raises `RetryableStatus` on 429, 5xx and connection failures so the state
+machine's own `Retry` policy handles everything transient, and it reads the API
+key from the EventBridge connection's own secret so the key still lives in
+exactly one place.
+
+It uses `requests` (see [`requirements.txt`](function/submit_score/requirements.txt)),
+the same client `app.py` uses, which is why **`sam build` is part of deploying**
+— see [Deploying](#deploying).
+
+The other cost of the native-state approach is that mapping logic is expressed
+in JSONata, and **JSONata is not validated at deploy time** — a bad expression is
+first discovered by a run failing. There is no local checker; use `--input
 '{"dryRun":true}'` after any change to the definition (see
 [First-run smoke test](#first-run-smoke-test)).
 
@@ -39,8 +68,9 @@ FetchScores             1 GET to ExpertArcher for the window
   ↓
 ProcessScores           Map, MaxConcurrency 1, one record at a time:
                           resolve names → validate → build the POST body
-                          → wait 3s → POST → record submitted / duplicate
-                                             / rejected, or skipped with a reason
+                          → wait 3s → PostScore (Lambda) → classify as
+                            submitted / duplicate / rejected-with-the-API's-
+                            -own-message, or skipped with a reason
   ↓
 BuildReport → SendReport (SNS email)
 ```
@@ -52,10 +82,14 @@ the Golden Records `paging-headers` response header is parsed, and while
 ### Files
 
 ```
-template.yaml               SAM template: connections, SNS topic, SSM parameter,
-                            state machine, schedule
-statemachine/sync.asl.yaml  The state machine definition (YAML ASL, JSONata)
-samconfig.toml              Deploy settings — region, stack name, non-secret parameters
+template.yaml                    SAM template: connections, SNS topic, SSM
+                                 parameter, Lambda, state machine, schedule
+statemachine/sync.asl.yaml       The state machine definition (YAML ASL, JSONata)
+function/submit_score/app.py     The one Lambda: POST a score, report the outcome
+function/submit_score/           requests, resolved into .aws-sam/build by
+  requirements.txt               sam build
+samconfig.toml                   Deploy settings — region, stack name, non-secret
+                                 parameters
 ```
 
 The name overrides in [`mappings.yaml`](../mappings.yaml) are the single source
@@ -74,18 +108,26 @@ Requires the SAM CLI and credentials for the target account.
 
 ```bash
 cd aws
+sam build
 sam deploy --parameter-overrides \
     GoldenRecordsApiKey=<club API key> \
     ExpertArcherApiKey=<key> \
     ReportEmail=you@example.com
 ```
 
+**Always `sam build` first.** It installs `requests` into `.aws-sam/build`, and
+once that directory exists `sam deploy` takes `.aws-sam/build/template.yaml` in
+preference to `template.yaml` — so a deploy that skips the build ships the
+*previously built* function, silently, however recently `app.py` changed. `sam
+build` resolves the linux/aarch64 wheels for the `arm64` runtime regardless of
+the machine you build on; no Docker or `--use-container` is needed.
+
 `sam deploy` cannot reuse a previous parameter value, so the two API keys must be
 supplied on every deploy. To avoid retyping them, copy `samconfig.toml` to
 `samconfig.local.toml` (gitignored), add them to `parameter_overrides`, and use:
 
 ```bash
-sam deploy --config-file samconfig.local.toml
+sam build && sam deploy --config-file samconfig.local.toml
 ```
 
 `samconfig.toml` pins the region to **eu-west-2** deliberately: the `AWS_REGION`
@@ -104,6 +146,14 @@ Both API keys are `NoEcho` parameters, kept out of the console and out of
 `describe-stacks`. EventBridge stores each in a Secrets Manager secret it owns
 and injects it at call time, so **no key reaches the state machine definition,
 the execution input, or the execution history**.
+
+`SubmitScoreFunction` reads the Golden Records key from that same
+EventBridge-owned secret (`GoldenRecordsConnection.SecretArn`) rather than taking
+it as an environment variable, so the key is still typed once and stored once —
+nothing is duplicated into the function's configuration. The secret's shape
+(`{"api_key_name", "api_key_value"}`) is EventBridge's, not ours, so the function
+treats a missing field as fatal instead of guessing; if AWS ever changes it, the
+POST fails loudly rather than sending an unauthenticated request.
 
 Golden Records needs the **club-level API key**, sent as
 `Authorization: Basic <key>` — the key sits where the base64 `user:pass` value
@@ -154,24 +204,19 @@ aws stepfunctions start-execution --region eu-west-2 \
 
 Then set `ScheduleState=ENABLED` and redeploy.
 
-### Confirm on that first run
+### Still unverified
 
-These cannot be verified without calling the real APIs. If the dry run fails,
-check them in this order — the failing state and its input and output are in the
-execution history in the Step Functions console.
+Authentication on both APIs, the `paging-headers` parsing and the mapping are all
+confirmed by successful runs. These are the parts no run has exercised yet — the
+failing state and its input and output are in the execution history in the Step
+Functions console.
 
 | # | Assumption | If it is wrong |
 |---|---|---|
-| 1 | A connection may set the **`Authorization`** header via `ApiKeyName` | `FetchRounds` returns 401. Fall back to a header in `InvocationHttpParameters`. |
-| 2 | The HTTP Task applies the connection's **`InvocationHttpParameters` query strings** | `FetchScores` returns 401/403 — the `apikey` parameter is not reaching ExpertArcher. |
-| 3 | The `States.Http.StatusCode.*` **retry error names** are right | Retries do not fire; a transient 503 fails the run instead of being retried. |
-| 4 | `paging-headers` arrives as a **JSON string** with `nextPage` / `currentPage` | Either only page 1 is read (silent "unmatched round" skips), or the paging loop never terminates. |
-| 5 | The shape of **`$states.errorOutput.Cause`** on a 4xx | Duplicate detection still works (it substring-matches the whole cause), but the per-message grouping in `SUBMISSION ERRORS` degrades to a 200-character slice of the raw cause. |
-
-Item 5 is a known soft spot: on a 4xx the HTTP Task fails and the Golden Records
-response body arrives as *text* inside `Cause`. JSONata cannot parse a JSON
-string in that position, so the `errors` list is recovered by string slicing.
-Duplicate detection is robust regardless.
+| 1 | The `States.Http.StatusCode.*` and Lambda **retry error names** are right | Retries do not fire; a transient 503 fails the run instead of being retried. |
+| 2 | A Python exception surfaces to `Retry` as its **class name** (`RetryableStatus`) | A throttled POST is not retried and reports as `submission failed: <error>`. Add `States.TaskFailed` to the retrier. |
+| 3 | The **paging loop** itself (no table currently exceeds one page) | A second page is never merged, silently turning valid scores into "unmatched round" skips. |
+| 4 | The EventBridge connection **secret shape** stays `{"api_key_name","api_key_value"}` | Every POST fails with a `KeyError`, reported as `submission failed`. The GETs are unaffected — they never read the secret directly. |
 
 `Fn::ToJsonString` inlining `AWS::Include` is worth confirming once after the
 first deploy — it should print a JSON object starting `{"afb":"American Flatbow"`:
@@ -190,28 +235,38 @@ entries grouped and counted so a problem affecting 30 records is one line:
   `invalid number`, …), and within it one line per distinct problem with
   `(N records)`. Same collapsing as `app.py`'s report. Sections and the lines
   inside them are sorted alphabetically.
-- `SUBMISSION ERRORS` — one block per message the API returned, with the archer
-  and date of each record that hit it.
+- `SUBMISSION ERRORS` — one block per message the API returned *verbatim*, with
+  the archer and date of each record that hit it. A rejection whose body carried
+  no `errors` list falls back to `HTTP <code> with no error detail`.
 - `RECORDS THAT WOULD BE SUBMITTED` — dry runs only.
 
-Duplicates are counted but not listed. They are expected and benign: the window
-overlaps the previous run's, so recent scores are deliberately re-offered to pick
-up late entries.
+Duplicates are counted but not listed, as in `app.py`. They are matched on the
+API's own message (`"This score already exists in the database."`) and kept out
+of `SUBMISSION ERRORS`, so that section only contains things worth acting on.
+Duplicates are expected and benign: the window overlaps the previous run's, so
+recent scores are deliberately re-offered to pick up late entries.
 
 A skipped record could not be mapped. Fix it at source in ExpertArcher, or add a
 name override to [`mappings.yaml`](../mappings.yaml) and redeploy — no
-regeneration step, `sam deploy` picks it up.
+regeneration step, `sam build && sam deploy` picks it up.
 
-**Failures.** There is **no failure-notification path**. Only `PostScore` has a
-`Catch`, which is what turns a 4xx into a reported rejection rather than a failed
-run. Anything else that fails — `Prepare`, a reference fetch, `FetchScores`, the
-Map itself, or `SendReport` — fails the execution with no email. **A day with no
-report email is the signal that something went wrong**, and the reason is in the
-execution history. Adding a `Catch` on those states, and a `Retry` on
-`SendReport`, is the obvious next improvement.
+**Failures.** There is **no failure-notification path**. `PostScore` is the only
+state with a `Catch`, and it exists so that one unsubmittable record is reported
+rather than killing the run — a rejected score no longer throws at all, since the
+function returns the outcome for any status. Anything else that fails —
+`Prepare`, a reference fetch, `FetchScores`, the Map itself, or `SendReport` —
+fails the execution with no email. **A day with no report email is the signal
+that something went wrong**, and the reason is in the execution history. Adding a
+`Catch` on those states, and a `Retry` on `SendReport`, is the obvious next
+improvement.
 
-**Logs.** Execution history is kept for 90 days and is the only record — the
-state machine has no CloudWatch Logs or X-Ray configuration.
+**Logs.** Execution history is kept for 90 days and is the record of the run
+itself — the state machine has no CloudWatch Logs or X-Ray configuration.
+`SubmitScoreFunction` gets the log group Lambda creates for it, named after the
+generated function name (`/aws/lambda/hb-score-sync-SubmitScoreFunction-…`); find
+it via the function's Monitor tab. The template sets no retention, so those logs
+are kept indefinitely. The function logs nothing of its own, so anything there is
+a Python traceback — scores and member names are never written to it.
 
 ## Throttling and limits
 
@@ -229,7 +284,10 @@ Golden Records allows **1 request/second, 20/minute, 200/hour**.
   `app.py`, or run it in day-sized slices via `from`/`to`.
 - Only throttling and 5xx responses are retried. A 4xx means the record was
   rejected; retrying cannot succeed and would spend budget the rest of the run
-  needs.
+  needs. `SubmitScoreFunction` enforces this split: it raises `RetryableStatus`
+  on 429, 5xx and connection failures, and returns normally on everything else,
+  so the retry policy lives in the definition and the function only decides what
+  is transient.
 
 A Standard execution allows 25,000 history events, and this uses roughly 8–10 per
 record, so the practical ceiling is a few thousand records per run. The 256 KB
@@ -260,4 +318,9 @@ it hit the history-event limit.
   grouping are the same.
 - **A record rejected with several messages** is grouped under all of them joined
   with a semicolon, where `app.py` would count it once per message.
-- **No CSV output and no `submission-errors.log`.** Use `app.py` for those.
+- **A 2xx response carrying a non-empty `errors` list counts as a rejection**, so
+  a "success" that is not one cannot be reported as submitted. `app.py` keys only
+  off the HTTP status.
+- **No CSV output and no `submission-errors.log`.** Use `app.py` for those — the
+  report names every rejection reason, but does not dump the full response body
+  or the submitted record alongside it.

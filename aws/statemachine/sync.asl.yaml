@@ -578,23 +578,20 @@ States:
 
         PostScore:
           Type: Task
-          Resource: arn:aws:states:::http:invoke
+          Resource: arn:aws:states:::lambda:invoke
           Arguments:
-            ApiEndpoint: ${GoldenRecordsBaseUrl}/scores
-            Method: POST
-            Authentication:
-              ConnectionArn: ${GoldenRecordsConnectionArn}
-            Headers:
-              Content-Type: application/json
-            RequestBody: "{% $states.input %}"
+            FunctionName: ${SubmitScoreFunctionArn}
+            Payload:
+              body: "{% $states.input %}"
+          Output: "{% $states.result.Payload %}"
           Retry:
             - ErrorEquals:
-                - States.Http.StatusCode.429
-                - States.Http.StatusCode.500
-                - States.Http.StatusCode.502
-                - States.Http.StatusCode.503
-                - States.Http.StatusCode.504
-                - States.Http.Socket
+                - RetryableStatus
+                - Lambda.Unknown
+                - Lambda.ServiceException
+                - Lambda.AWSLambdaException
+                - Lambda.SdkClientException
+                - Lambda.TooManyRequestsException
                 - States.Timeout
               IntervalSeconds: 1
               MaxAttempts: 5
@@ -606,32 +603,52 @@ States:
                 - States.ALL
               Output: >-
                 {%
-                  (
-                    $cause := $string($states.errorOutput.Cause) & '';
-                    $inner := $contains($cause, 'errors')
-                      ? $substringAfter($substringBefore($substringAfter($cause, 'errors'), ']'), '[')
-                      : '';
-                    $msgs := $filter($split($replace($inner, '\\', ''), '"'), function($v, $i) { $i % 2 = 1 });
-                    {
-                      'state': $contains($cause, 'This score already exists in the database.') ? 'duplicate' : 'rejected',
-                      'archer': $archer,
-                      'date': $day,
-                      'error': $states.errorOutput.Error,
-                      'message': $count($msgs) > 0
-                        ? $join($msgs, '; ')
-                        : ($cause != '' ? $substring($cause, 0, 200) : $string($states.errorOutput.Error) & '')
-                    }
-                  )
+                  {
+                    'state': 'rejected',
+                    'archer': $archer,
+                    'date': $day,
+                    'message': 'submission failed: ' & ($string($states.errorOutput.Error) & '')
+                  }
                 %}
-              Next: Rejected
-          Next: Recorded
+              Next: SubmissionFailed
+          Next: ClassifyResponse
+
+        ClassifyResponse:
+          Type: Choice
+          Choices:
+            - Condition: "{% $states.input.ok %}"
+              Next: Recorded
+            - Condition: "{% $states.input.duplicate %}"
+              Next: Duplicate
+          Default: Rejected
 
         Recorded:
           Type: Pass
           Output: "{% { 'state': 'submitted', 'archer': $archer, 'date': $day } %}"
           End: True
 
+        Duplicate:
+          Type: Pass
+          Output: "{% { 'state': 'duplicate', 'archer': $archer, 'date': $day } %}"
+          End: True
+
         Rejected:
+          Type: Pass
+          Output: >-
+            {%
+              {
+                'state': 'rejected',
+                'archer': $archer,
+                'date': $day,
+                'message': $count($states.input.errors) > 0
+                  ? $join($states.input.errors, '; ')
+                  : 'HTTP ' & ($string($states.input.statusCode) & '') & ' with no error detail'
+              }
+            %}
+          End: True
+
+        # Reached only from the Catch above, which has already built the record.
+        SubmissionFailed:
           Type: Pass
           End: True
 

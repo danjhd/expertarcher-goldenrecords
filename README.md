@@ -13,8 +13,9 @@ framework — the goal is to make the integration easy to follow.
 
 To run the submission path unattended on a daily schedule, there is an AWS
 Step Functions deployment of the same integration in [`aws/`](aws/README.md) —
-no Lambda, and it emails a report of every run. `app.py` stays the reference
-implementation, and the only way to produce a CSV bulk-import file.
+native states throughout apart from one small Lambda for the POST, and it emails
+a report of every run. `app.py` stays the reference implementation, and the only
+way to produce a CSV bulk-import file.
 
 ## How it works
 
@@ -328,8 +329,9 @@ score-records.csv      Golden Records' sample CSV import file (fake data; commit
 submission-errors.log  Full detail of rejected submissions (gitignored; per run)
 pyproject.toml         Dependencies / uv project
 aws/                   Daily unattended sync on AWS -- see aws/README.md
-  template.yaml                SAM template (connections, SNS, state machine, schedule)
-  statemachine/sync.asl.yaml   Step Functions definition (YAML ASL, JSONata, no Lambda)
+  template.yaml                SAM template (connections, SNS, Lambda, state machine, schedule)
+  statemachine/sync.asl.yaml   Step Functions definition (YAML ASL, JSONata)
+  function/submit_score/       The one Lambda: POST a score, report the outcome
   samconfig.toml               Deploy settings (no secrets; committed)
 ```
 

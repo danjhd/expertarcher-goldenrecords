@@ -6,8 +6,8 @@ Transform:
 
 Description: >-
   Daily ExpertArcher -> Golden Records score sync, as a Step Functions state
-  machine with no Lambda. The state machine calls both APIs over HTTPS directly
-  and emails a report of every run.
+  machine. Every read calls the APIs over HTTPS directly; one small Lambda
+  performs the POST. A report of every run is emailed.
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -158,6 +158,30 @@ Resources:
             Parameters:
               Location: ../mappings.yaml
 
+  SubmitScoreFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: POST one score to Golden Records and return the parsed response
+      Runtime: python3.14
+      Architectures:
+        - arm64
+      Handler: app.handler
+      Timeout: 35
+      MemorySize: 128
+      CodeUri: function/submit_score/
+      Environment:
+        Variables:
+          SCORES_URL: !Sub "${GoldenRecordsBaseUrl}/scores"
+          API_KEY_SECRET_ARN: !GetAtt GoldenRecordsConnection.SecretArn
+      Policies:
+        - Statement:
+            - Sid: ReadGoldenRecordsApiKey
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+                - secretsmanager:DescribeSecret
+              Resource: !GetAtt GoldenRecordsConnection.SecretArn
+
   ReportTopic:
     Type: AWS::SNS::Topic
     Metadata:
@@ -193,6 +217,7 @@ Resources:
         ReportTopicArn: !Ref ReportTopic
         ReferencePageSize: !Ref ReferencePageSize
         NameMappingsParameterName: !Ref NameMappingsParameter
+        SubmitScoreFunctionArn: !GetAtt SubmitScoreFunction.Arn
       Events:
         Daily:
           Type: ScheduleV2
@@ -217,17 +242,6 @@ Resources:
                   states:HTTPEndpoint:
                     - !Sub ${GoldenRecordsBaseUrl}/*
                     - !Sub ${ExpertArcherBaseUrl}/*
-            - Sid: InvokeThirdPartyApisPost
-              Effect: Allow
-              Action: states:InvokeHTTPEndpoint
-              Resource: !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*
-              Condition:
-                StringEquals:
-                  states:HTTPMethod:
-                    - POST
-                StringLike:
-                  states:HTTPEndpoint:
-                    - !Sub ${GoldenRecordsBaseUrl}/*
         - Statement:
             - Sid: UseConnections
               Effect: Allow
@@ -248,5 +262,7 @@ Resources:
               Effect: Allow
               Action: ssm:GetParameter
               Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${NameMappingsParameter}
+        - LambdaInvokePolicy:
+            FunctionName: !Ref SubmitScoreFunction
         - SNSPublishMessagePolicy:
             TopicName: !GetAtt ReportTopic.TopicName
