@@ -22,9 +22,6 @@ aws/.aws-sam/
 # The committed aws/samconfig.toml has no secrets in it.
 aws/samconfig.local.toml
 
-# Dependencies of the pre-deploy checker in tools/ (package-lock.json is committed)
-tools/node_modules/
-
 # Python
 __pycache__/
 *.pyc

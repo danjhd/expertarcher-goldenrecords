@@ -331,9 +331,6 @@ aws/                   Daily unattended sync on AWS -- see aws/README.md
   template.yaml                SAM template (connections, SNS, state machine, schedule)
   statemachine/sync.asl.yaml   Step Functions definition (YAML ASL, JSONata, no Lambda)
   samconfig.toml               Deploy settings (no secrets; committed)
-tools/                 Pre-deploy checks for the state machine definition
-  gen_asl_names.py             Generates its name mappings from mappings.yaml
-  check_statemachine.js        Compiles the JSONata and tests it against app.py's contract
 ```
 
 ## Notes on data & privacy

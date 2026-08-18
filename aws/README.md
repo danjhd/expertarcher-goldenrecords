@@ -19,67 +19,53 @@ the [HTTP Task](https://docs.aws.amazon.com/step-functions/latest/dg/connect-thi
 and by [JSONata](https://docs.aws.amazon.com/step-functions/latest/dg/transforming-data.html)
 respectively.
 
-The cost is that mapping logic is expressed in JSONata rather than Python, and
-JSONata errors are not caught at deploy time. That is what `tools/` is for — see
-[Before deploying](#before-deploying).
+The cost is that the mapping logic is expressed in JSONata rather than Python,
+and that **JSONata is not validated at deploy time** — a bad expression is first
+discovered by a run failing. There is no local checker; use `--input
+'{"dryRun":true}'` after any change to the definition (see
+[First-run smoke test](#first-run-smoke-test)).
 
 ## What it does
 
 ```
-Prepare                 derive the date window from the execution start time
+Prepare                 read the name mappings from SSM, derive the date window
   ↓
-FetchRounds             ┐
-FetchBowTypes           │ 4 GETs to Golden Records, each projected straight
-FetchAgeGroups          │ down to a {name: id} map so the 82 KB rounds payload
-FetchMembers            ┘ never travels further
-  ↓
-CheckReferenceComplete  fail loudly if a page came back full (see below)
+FetchRounds     ─┐
+FetchBowTypes    │  4 paginated GETs to Golden Records. Each page is projected
+FetchAgeGroups   │  straight down to a {name: id} map, so the 82 KB rounds
+FetchMembers    ─┘  payload never travels past the state that fetched it.
   ↓
 FetchScores             1 GET to ExpertArcher for the window
   ↓
-Transform               map each score to a POST body, or record why it was skipped
+ProcessScores           Map, MaxConcurrency 1, one record at a time:
+                          resolve names → validate → build the POST body
+                          → wait 3s → POST → record submitted / duplicate
+                                             / rejected, or skipped with a reason
   ↓
-Partition               split into submit now / defer / skipped
-  ↓
-SubmitScores            Map, one at a time, 3s apart, rejections caught and counted
-  ↓
-BuildReport → PublishReport → Done
+BuildReport → SendReport (SNS email)
 ```
 
-Anything that fails routes to `ReportFailure`, which emails what happened and
-then fails the execution deliberately, so a broken run shows as failed rather
-than quietly succeeding.
+Each `Fetch*` state is followed by a `*Complete` Choice and a `*Paginate` state:
+the Golden Records `paging-headers` response header is parsed, and while
+`nextPage` is `"Yes"` the next page is fetched and merged into the same map.
 
 ### Files
 
 ```
-template.yaml               SAM template: connections, SNS topic, state machine, schedule
+template.yaml               SAM template: connections, SNS topic, SSM parameter,
+                            state machine, schedule
 statemachine/sync.asl.yaml  The state machine definition (YAML ASL, JSONata)
 samconfig.toml              Deploy settings — region, stack name, non-secret parameters
 ```
 
-## Before deploying
-
-Two checks, both local and read-only. Run them after any change to
-`sync.asl.yaml` or `mappings.toml`.
-
-```bash
-# 1. mappings.toml is the single source of truth for name overrides; the state
-#    machine's copy is generated from it. Fails if they have drifted.
-python tools/gen_asl_names.py --check
-
-# 2. Compiles all 51 JSONata expressions, checks the state graph, and runs the
-#    real expressions against the real reference data in golden-records/,
-#    asserting the POST body matches api_record() in app.py field for field.
-cd tools && npm install && npm run check
-```
-
-The second one matters more than it looks. Nothing validates JSONata at deploy
-time, so without it a typo in a mapping expression is first discovered by a
-scheduled run failing halfway through submitting real scores.
+The name overrides in [`mappings.yaml`](../mappings.yaml) are the single source
+of truth for both paths. At deploy time CloudFormation inlines that file
+(`AWS::Include`) and serialises it to JSON (`Fn::ToJsonString`) into an SSM
+parameter, which `Prepare` reads with `$parse()`. Nothing is generated into the
+definition, so the CSV and API paths cannot drift.
 
 ```bash
-cd aws && sam validate --lint      # template only
+cd aws && sam validate --lint      # template only; does not check JSONata
 ```
 
 ## Deploying
@@ -94,7 +80,7 @@ sam deploy --parameter-overrides \
     ReportEmail=you@example.com
 ```
 
-`sam deploy` cannot reuse a previous parameter value, so those three must be
+`sam deploy` cannot reuse a previous parameter value, so the two API keys must be
 supplied on every deploy. To avoid retyping them, copy `samconfig.toml` to
 `samconfig.local.toml` (gitignored), add them to `parameter_overrides`, and use:
 
@@ -109,8 +95,8 @@ profiles say `eu-west-2`, and which one wins should not be left to chance.
 **AWS will email a subscription confirmation** on first deploy. Until that is
 accepted, no reports arrive.
 
-`ScheduleState` defaults to `DISABLED` in `samconfig.toml` so the first deploy
-does not start submitting overnight before the smoke test below has been run.
+`ScheduleState` defaults to `DISABLED` so the first deploy does not start
+submitting overnight before the smoke test below has been run.
 
 ### Credentials
 
@@ -126,6 +112,27 @@ only the calling user's own member record, which would leave every other archer
 reported as an unmatched member name. See
 [the authentication notes](../README.md#authentication-notes-for-golden-records).
 
+## Running it by hand
+
+The state machine is named after the stack, so with the default stack name the
+ARN is `arn:aws:states:eu-west-2:<account-id>:stateMachine:hb-score-sync`. The
+template declares no outputs; `aws stepfunctions list-state-machines --region
+eu-west-2` will also find it.
+
+Execution input (all fields optional; the schedule sends `{}`):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `dryRun` | `false` | Map and report, submit nothing. Also accepts `"true"`. |
+| `from` | yesterday | Start of the window, `YYYY-MM-DD`. `null` sends no lower bound. |
+| `to` | today | End of the window, `YYYY-MM-DD`. `null` sends no upper bound. |
+| `pageSize` | `ReferencePageSize` (500) | Page size for the reference fetches. |
+
+Both dates are derived from the execution start time, so a scheduled run covers
+yesterday and today. Passing `null` explicitly is different from omitting the
+field: omitting it uses the default, `null` drops the query parameter entirely
+and asks ExpertArcher for everything it has.
+
 ## First-run smoke test
 
 Do these in order. The dry run makes no writes to Golden Records.
@@ -133,8 +140,7 @@ Do these in order. The dry run makes no writes to Golden Records.
 ```bash
 # 1. Dry run: fetch, map, report. Submits nothing.
 aws stepfunctions start-execution --region eu-west-2 \
-  --state-machine-arn <StateMachineArn from the stack outputs> \
-  --input '{"dryRun":true}'
+  --state-machine-arn <arn> --input '{"dryRun":true}'
 ```
 
 Check the report email against a local `python app.py --dry-run --from … --to …`
@@ -143,67 +149,69 @@ over the same window. The counts and the skip reasons should agree.
 ```bash
 # 2. A real run over a single day, to confirm submission end to end.
 aws stepfunctions start-execution --region eu-west-2 \
-  --state-machine-arn <arn> --input '{"lookbackDays":1}'
+  --state-machine-arn <arn> --input '{"from":"2026-01-01","to":"2026-01-01"}'
 ```
 
 Then set `ScheduleState=ENABLED` and redeploy.
 
 ### Confirm on that first run
 
-These are the parts that cannot be verified without calling the real APIs. If
-the dry run fails, check them in this order — the failing state and its input
-and output are in the execution history in the Step Functions console.
+These cannot be verified without calling the real APIs. If the dry run fails,
+check them in this order — the failing state and its input and output are in the
+execution history in the Step Functions console.
 
 | # | Assumption | If it is wrong |
 |---|---|---|
-| 1 | `ResponseBody` arrives as **parsed JSON**, not a string | Every reference map is empty and every score is skipped as an unmatched round. Add a `$eval()` of the body in the `Fetch*` states. |
-| 2 | A connection may set the **`Authorization`** header via `ApiKeyName` | `FetchRounds` returns 401. Fall back to a header in `InvocationHttpParameters`. |
-| 3 | The HTTP Task applies the connection's **`InvocationHttpParameters` query strings** | `FetchScores` returns 401/403 — the `apikey` parameter is not reaching ExpertArcher. |
-| 4 | The `States.Http.StatusCode.*` **retry error names** are right | Retries do not fire; a transient 503 fails the run instead of being retried. |
-| 5 | CloudFormation accepts a **YAML** definition from S3 | The deploy fails at `AWS::StepFunctions::StateMachine`. Convert the definition to JSON at deploy time. |
-| 6 | The shape of **`$states.errorOutput.Cause`** on a 4xx | Duplicate detection still works (it substring-matches the whole cause), but per-message error grouping degrades to a truncated string. Adjust the slicing in `ClassifyRejection`. |
+| 1 | A connection may set the **`Authorization`** header via `ApiKeyName` | `FetchRounds` returns 401. Fall back to a header in `InvocationHttpParameters`. |
+| 2 | The HTTP Task applies the connection's **`InvocationHttpParameters` query strings** | `FetchScores` returns 401/403 — the `apikey` parameter is not reaching ExpertArcher. |
+| 3 | The `States.Http.StatusCode.*` **retry error names** are right | Retries do not fire; a transient 503 fails the run instead of being retried. |
+| 4 | `paging-headers` arrives as a **JSON string** with `nextPage` / `currentPage` | Either only page 1 is read (silent "unmatched round" skips), or the paging loop never terminates. |
+| 5 | The shape of **`$states.errorOutput.Cause`** on a 4xx | Duplicate detection still works (it substring-matches the whole cause), but the per-message grouping in `SUBMISSION ERRORS` degrades to a 200-character slice of the raw cause. |
 
-Item 6 is a known soft spot: on a 4xx the HTTP Task fails and the Golden Records
+Item 5 is a known soft spot: on a 4xx the HTTP Task fails and the Golden Records
 response body arrives as *text* inside `Cause`. JSONata cannot parse a JSON
-string, so individual error messages are recovered by string slicing. Duplicate
-detection is robust regardless.
+string in that position, so the `errors` list is recovered by string slicing.
+Duplicate detection is robust regardless.
+
+`Fn::ToJsonString` inlining `AWS::Include` is worth confirming once after the
+first deploy — it should print a JSON object starting `{"afb":"American Flatbow"`:
+
+```bash
+aws ssm get-parameter --name /hb-score-sync/name-mappings --region eu-west-2 \
+  --query Parameter.Value --output text
+```
 
 ## Operating it
 
-**Reading the report.** Same shape as `app.py`'s: counts, then skipped records
-grouped by reason and collapsed to unique problems with a record count, then
-submission errors grouped by the API's own message. Sections are ordered by how
-many distinct problems they contain, so the biggest thing to fix comes first.
+**Reading the report.** Counts first, then up to three sections, each with its
+entries grouped and counted so a problem affecting 30 records is one line:
 
-- *Already present* — duplicates. Expected, and benign: the window is 7 days by
-  default, so recent scores are deliberately re-offered to pick up late entries.
-- *Deferred* — mapped but over the hourly request cap. The next run takes them.
-- *Skipped* — could not be mapped. Fix at source in ExpertArcher, or add a name
-  override to [`mappings.toml`](../mappings.toml) and regenerate.
+- `SKIPPED RECORDS BY REASON` — one block per reason (`unmatched round`,
+  `invalid number`, …), and within it one line per distinct problem with
+  `(N records)`. Same collapsing as `app.py`'s report. Sections and the lines
+  inside them are sorted alphabetically.
+- `SUBMISSION ERRORS` — one block per message the API returned, with the archer
+  and date of each record that hit it.
+- `RECORDS THAT WOULD BE SUBMITTED` — dry runs only.
 
-**Adding a name mapping.** Edit `mappings.toml`, then:
+Duplicates are counted but not listed. They are expected and benign: the window
+overlaps the previous run's, so recent scores are deliberately re-offered to pick
+up late entries.
 
-```bash
-python tools/gen_asl_names.py     # regenerate the block in sync.asl.yaml
-cd tools && npm run check         # confirm the new target actually exists
-cd ../aws && sam deploy ...
-```
+A skipped record could not be mapped. Fix it at source in ExpertArcher, or add a
+name override to [`mappings.yaml`](../mappings.yaml) and redeploy — no
+regeneration step, `sam deploy` picks it up.
 
-Never edit the generated block between the `BEGIN GENERATED` / `END GENERATED`
-markers by hand — `--check` will fail, and `mappings.toml` must stay the single
-source of truth so the CSV and API paths cannot diverge.
+**Failures.** There is **no failure-notification path**. Only `PostScore` has a
+`Catch`, which is what turns a 4xx into a reported rejection rather than a failed
+run. Anything else that fails — `Prepare`, a reference fetch, `FetchScores`, the
+Map itself, or `SendReport` — fails the execution with no email. **A day with no
+report email is the signal that something went wrong**, and the reason is in the
+execution history. Adding a `Catch` on those states, and a `Retry` on
+`SendReport`, is the obvious next improvement.
 
-**Failure alerts.** Two independent paths, deliberately:
-
-1. The state machine's own `ReportFailure` state emails what went wrong.
-2. An EventBridge rule watches for `FAILED`/`TIMED_OUT`/`ABORTED` executions and
-   emails from outside. This catches failures that stop the machine reaching its
-   own report state.
-
-A run producing no email at all is itself the signal that something is wrong.
-
-**Logs.** Execution history is kept for 90 days; `ALL`-level logs with execution
-data go to `/aws/vendedlogs/states/<stack-name>`.
+**Logs.** Execution history is kept for 90 days and is the only record — the
+state machine has no CloudWatch Logs or X-Ray configuration.
 
 ## Throttling and limits
 
@@ -212,33 +220,34 @@ Golden Records allows **1 request/second, 20/minute, 200/hour**.
 - The `Wait` between submissions (3s) satisfies the per-second and per-minute
   limits. A `Wait` in a Standard workflow costs nothing, unlike sleeping in a
   Lambda, so there is no reason to cut it fine.
-- The per-hour limit is handled by `SubmitCap` (default 180, leaving headroom for
-  the four reference fetches and any retries). Anything over it is reported as
-  deferred rather than dropped or throttled into failure.
+- The per-hour limit is **not** enforced by the definition. At 3s per record a
+  run reaches 200 submissions in about 10 minutes, so a backlog that large will
+  start collecting 429s; those are retried (5 attempts, exponential backoff to
+  60s), and anything still throttled after that is reported as rejected. The
+  daily window keeps normal runs far below the limit — a first run over a long
+  window, or a `null` window, is where this bites. Submit such a backlog with
+  `app.py`, or run it in day-sized slices via `from`/`to`.
 - Only throttling and 5xx responses are retried. A 4xx means the record was
   rejected; retrying cannot succeed and would spend budget the rest of the run
   needs.
 
-At 3s per record, a 180-record run takes about 9 minutes — well inside Step
-Functions' limits (a Standard execution allows 25,000 history events; this uses
-roughly 5 per record).
+A Standard execution allows 25,000 history events, and this uses roughly 8–10 per
+record, so the practical ceiling is a few thousand records per run. The 256 KB
+limit on state payloads applies to the scores list held by the Map, which is the
+other reason not to run an unbounded window.
 
 ### Reference paging
 
-The `Fetch*` states request **one page** of `ReferencePageSize` (default 500)
-records, which comfortably covers the largest table (rounds, currently 373).
-If any page comes back full, `CheckReferenceComplete` **stops the run** and
-emails why, rather than continuing with incomplete reference data.
+The `Fetch*` states request `pageSize` (default 500) records per page and keep
+going while `paging-headers` says there is a next page, merging each page into
+the same `{name: id}` map. The largest table (rounds, currently 373) fits in one
+page today, so the loop is insurance rather than routine.
 
-That is deliberate. A missed second page would silently turn valid scores into
-"unmatched round" skips — a plausible-looking report that is quietly wrong,
-which is worse than an obviously failed run. If a table ever exceeds the page
-size, raise `ReferencePageSize` or add a paging loop.
+The loop has no iteration guard: it terminates only when the API stops saying
+`nextPage: "Yes"`. If that header were ever wrong, the execution would run until
+it hit the history-event limit.
 
 ## Known differences from `app.py`
-
-Both are checked by `tools/check_statemachine.js`, so these are the deliberate
-ones:
 
 - **Fractional numbers are skipped, not truncated.** `int(600.5)` in Python
   gives 600; the state machine reports the score as an invalid number instead. A
@@ -246,6 +255,9 @@ ones:
 - **`Xs` that is a non-numeric string becomes 0** rather than skipping the
   record, which is what `int("abc")` would cause in `app.py`.
 - **Skip detail text differs slightly.** A missing score reads
-  `score= hits=1 golds=1` rather than Python's exception text. The category and
-  the grouping are the same.
+  `score= hits=1 golds=1` rather than Python's exception text, and a blank detail
+  prints as blank rather than `(missing / empty)`. The categories and the
+  grouping are the same.
+- **A record rejected with several messages** is grouped under all of them joined
+  with a semicolon, where `app.py` would count it once per message.
 - **No CSV output and no `submission-errors.log`.** Use `app.py` for those.

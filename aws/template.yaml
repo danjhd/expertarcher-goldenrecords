@@ -148,7 +148,9 @@ Resources:
       Name: !Sub "/${AWS::StackName}/name-mappings"
       Type: String
       DataType: text
-      Description: ExpertArcher -> Golden Records round and bow-type name overrides
+      Description: >-
+        ExpertArcher -> Golden Records name overrides (rounds, bow types,
+        classifications), generated from mappings.yaml at deploy time
       Value:
         Fn::ToJsonString:
           Fn::Transform:
