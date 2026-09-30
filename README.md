@@ -94,7 +94,7 @@ The keys below are exactly what the Golden Records Scores API expects.
 | `member_id` | member name → id | Name resolved against `members.json` |
 | `round_id` | `round` name → id | Via mappings + `rounds.json` (see [Name resolution](#name-resolution)) |
 | `class_id` | `bowtype` name → id | Via mappings + `bowtypes.json` |
-| `age_group_id` | `gender` + `class` → id | e.g. `female` + `u14` → "Women U14" → id (`get_age_group`) |
+| `age_group_id` | `gender` + `class` → id | `class` via mappings first (e.g. `Master` → `50+`), then e.g. `female` + `u14` → "Women U14" → id (`get_age_group`) |
 | `date_shot` | `date` | ExpertArcher datetime reduced to ISO `YYYY-MM-DD` |
 | `score`, `hits`, `golds` | same | Parsed as integers |
 | `Xs` | `xs` / `Xs` | Either casing accepted; missing = 0 |
@@ -123,10 +123,12 @@ mappings file as small as possible. Unmatched names are reported, not guessed.
 
 The same file also holds the classification mappings (e.g. `IB1` → `Indoor
 Bowman 1st Class`), which are used only by the CSV import — see
-[Bulk import via CSV](#bulk-import-via-csv). Rounds, bow types and
-classifications share one namespace, since they are all name translations and
-no key is ambiguous between them. The only difference is the fallback for a
-name that is *not* listed: rounds and bow types are tried as-is, whereas an
+[Bulk import via CSV](#bulk-import-via-csv), and the age-class mappings (e.g.
+`Master` → `50+`), which translate the ExpertArcher `class` before the
+age-group name is built. Rounds, bow types, age classes and classifications
+share one namespace, since they are all name translations and no key is
+ambiguous between them. The only difference is the fallback for a name that is
+*not* listed: rounds, bow types and age classes are tried as-is, whereas an
 unmapped classification is left blank.
 
 ## Setup
@@ -218,7 +220,9 @@ record count. Skip categories:
   name Golden Records doesn't recognise → the mapping is wrong.
 - **Unmatched member name** — the archer name isn't in the Golden Records roster
   (typo, missing surname, etc.).
-- **Unmatched age group** — the gender/class combination didn't resolve.
+- **Unmatched age group** — the gender/class combination didn't resolve → add
+  an age-class mapping in [mappings.yaml](mappings.yaml) (e.g. `"Master": "50+"`)
+  or fix it in ExpertArcher.
 - **Invalid number / date** — a required field was missing or unparseable.
 
 ## Submitting scores

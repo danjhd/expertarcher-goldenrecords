@@ -1,8 +1,8 @@
 # ExpertArcher -> Golden Records name mappings.
 #
 # One flat mapping of "ExpertArcher name": "Golden Records name". Rounds, bow
-# types and classifications all live here together -- they are all just name
-# translations.
+# types, age classes and classifications all live here together -- they are all
+# just name translations.
 #
 # The comment groups below are for readability only; the parser sees one
 # mapping. Keys and values are always quoted so a name that looks like a number
@@ -43,6 +43,11 @@
 "WA Clout Double 110m": "Double WA Clout 110m"
 "WA Clout Double 90m": "Double WA Clout 90m"
 "WA Clout Double 75m": "Double WA Clout 75m"
+
+# --- Age classes ---
+# Mapped to the ExpertArcher class the age-group name is built from
+# (gender + class, e.g. "male" + "50+" -> "Men 50+").
+"Master": "50+"
 
 # --- Outdoor Classifications ---
 "1st class": "Archer 1st Class"

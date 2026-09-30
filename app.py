@@ -670,7 +670,11 @@ def transform_score(score, lookups):
     if ea_name not in lookups.members:
         return None, ("unmatched member name", ea_name)
 
-    age_group_name = get_age_group(score.get("gender"), score.get("class"))
+    # The age class is translated via the mappings first (e.g. "Master" ->
+    # "50+"); an unlisted class is used as-is.
+    ea_class = score.get("class")
+    age_class = lookups.name_map.get(ea_class, ea_class)
+    age_group_name = get_age_group(score.get("gender"), age_class)
     if age_group_name not in lookups.age_groups:
         detail = f"{score.get('gender')}/{score.get('class')} -> {age_group_name!r}"
         return None, ("unmatched age group", detail)

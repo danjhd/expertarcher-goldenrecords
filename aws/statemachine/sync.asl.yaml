@@ -459,7 +459,9 @@ States:
               {%
                 (
                   $prefix := $lookup({ 'male': 'Men', 'female': 'Women' }, $states.input.gender);
-                  $exists($prefix) ? $trim($prefix & ' ' & ($states.input.class = 'senior' ? '' : $uppercase($states.input.class))) : ''
+                  $mapped := $lookup($nameMap, $states.input.class);
+                  $class := $exists($mapped) ? $mapped : $states.input.class;
+                  $exists($prefix) ? $trim($prefix & ' ' & ($class = 'senior' ? '' : $uppercase($class))) : ''
                 )
               %}
             day: "{% $substringBefore($states.input.date & '', 'T') %}"
