@@ -72,6 +72,10 @@ NUMERIC_FIELDS = ("score", "hits", "golds")
 # the ExpertArcher integration as the source of the score.
 USER_1_TAG = "Expert Archer"
 
+# Golden Records rejects an empty `location`. ExpertArcher's `place` can be
+# missing, blank or a non-string (e.g. an empty array), so this is sent instead.
+LOCATION_DEFAULT = "[not specified]"
+
 # Golden Records ScoreStatusOptions enum. The `status` field is sent as one of
 # these integer codes (the string names are rejected).
 STATUS_PRACTICE = 1
@@ -701,7 +705,7 @@ def transform_score(score, lookups):
         status = STATUS_CLUB_EVENT
 
     place = score.get("place")
-    location = place.strip() if isinstance(place, str) else ""
+    location = (place.strip() if isinstance(place, str) else "") or LOCATION_DEFAULT
 
     mapped = Mapped(
         member_id=lookups.members[ea_name],

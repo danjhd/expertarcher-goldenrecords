@@ -553,6 +553,7 @@ States:
                 $score := $states.input;
                 $truthy := function($v) { $exists($v) and $v != false and $v != 0 and $v != '' };
                 $tournament := $truthy($score.tournament);
+                $location := $type($score.place) = 'string' ? $trim($score.place) : '';
                 {
                   'age_group_id': $lookup($ageGroupMap, $ageName),
                   'class_id': $lookup($classMap, $lowercase($grBowtype)),
@@ -560,7 +561,7 @@ States:
                   'member_id': $lookup($memberMap, $archer),
                   'golds': $number($score.golds),
                   'hits': $number($score.hits),
-                  'location': $string($score.place) = $score.place ? $trim($score.place) : '',
+                  'location': $location != '' ? $location : '[not specified]',
                   'qualifying': $not($contains($string($score.round), '252')),
                   'record_qualifying': true,
                   'record_status': $tournament,

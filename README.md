@@ -98,7 +98,7 @@ The keys below are exactly what the Golden Records Scores API expects.
 | `date_shot` | `date` | ExpertArcher datetime reduced to ISO `YYYY-MM-DD` |
 | `score`, `hits`, `golds` | same | Parsed as integers |
 | `Xs` | `xs` / `Xs` | Either casing accepted; missing = 0 |
-| `location` | `place` | Free text; trimmed, and empty when `place` is absent |
+| `location` | `place` | Free text; trimmed. `[not specified]` when `place` is absent, blank or not a string (e.g. `[]`), as Golden Records rejects an empty location |
 | `status` | `tournament` / `competition` flags | `ScoreStatusOptions` enum int: `4` Open Competition / `3` Club Competition / `2` Club Event |
 | `record_status` | `tournament` | `True` only for open tournaments |
 | `qualifying` | `round` name | `False` for "252" award rounds |
@@ -302,7 +302,7 @@ sample `score-records.csv`:
 | `Score` / `Hits` / `Golds` / `Xs` | same | Integers |
 | `Handicap` | `handicap` | From ExpertArcher when in the `select` (see [config.toml](config.toml)); blank otherwise |
 | `Classification` | `classification` | Translated to the Golden Records name via [mappings.yaml](mappings.yaml) (e.g. `IB1` → `Indoor Bowman 1st Class`); an unmapped value is left blank |
-| `Location` | `place` | Trimmed free text |
+| `Location` | `place` | Trimmed free text; `[not specified]` when absent or empty |
 | `Class` | `bowtype` name | The resolved Golden Records **bow type** name |
 | `Age Group` | `gender` + `class` | e.g. `Men`, `Women`, `Men U16` |
 | `Round` | `round` name | The resolved Golden Records round name |
